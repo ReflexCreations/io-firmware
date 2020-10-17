@@ -24,7 +24,7 @@
 
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "bool.h"
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -192,12 +192,12 @@ static int8_t CUSTOM_HID_DeInit_FS(void)
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 
-uint8_t packet_received = 0;
+bool packet_received = false;
 uint8_t rep_buf[64];
 static int8_t CUSTOM_HID_OutEvent_FS(uint8_t event_idx, uint8_t state)
 {
   USBD_CUSTOM_HID_HandleTypeDef *hhid = (USBD_CUSTOM_HID_HandleTypeDef*)hUsbDeviceFS.pClassData;
-  packet_received = 1;
+  packet_received = true;
   uint8_t i = 0;
   for(; i < 64; i++){
     rep_buf[i] = hhid->Report_buf[i];

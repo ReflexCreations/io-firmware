@@ -1,74 +1,57 @@
 #include "main.h"
 #include "usb_device.h"
 #include "usbd_customhid.h"
+#include "bool.h"
+#include "uart.h"
+#include "msgbus.h"
+#include "debug_leds.h"
+#include "error_handler.h"
 
-#define DBG_LED1_ON() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET)
-#define DBG_LED1_OFF() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET)
-#define DBG_LED1_TOGGLE() HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13)
+#define USB_HID_PACKET_SIZE_BYTES (64U)
 
-#define DBG_LED2_ON() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET)
-#define DBG_LED2_OFF() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET)
-#define DBG_LED2_TOGGLE() HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_14)
-
-#define DBG_LED3_ON() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET)
-#define DBG_LED3_OFF() HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_RESET)
-#define DBG_LED3_TOGGLE() HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15)
+#define BUILD_SENSOR_REQ(req, comport) \
+  req.comport_id = comport; \
+  req.request_command = CMD_REQUEST_SENSORS; \
+  req.send_data = NULL; \
+  req.send_data_len = 0; \
+  req.response_data = sensor_buffer + ((uint8_t)comport * 8); \
+  req.response_len = 8;
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
-UART_HandleTypeDef huart1; // Left
-UART_HandleTypeDef huart2; // Up, Right
-UART_HandleTypeDef huart3; // Down
-DMA_HandleTypeDef hdma_usart1_rx; // Left
-DMA_HandleTypeDef hdma_usart1_tx;
-DMA_HandleTypeDef hdma_usart2_rx; // Up, right
-DMA_HandleTypeDef hdma_usart2_tx;
-DMA_HandleTypeDef hdma_usart3_rx; // Down
-DMA_HandleTypeDef hdma_usart3_tx;
+UART_HandleTypeDef huart1_l; // Left
+UART_HandleTypeDef huart2_u_r; // Up, Right
+UART_HandleTypeDef huart3_d; // Down
+DMA_HandleTypeDef hdma_usart1_l_rx; // Left
+DMA_HandleTypeDef hdma_usart1_l_tx;
+DMA_HandleTypeDef hdma_usart2_u_r_rx; // Up, right
+DMA_HandleTypeDef hdma_usart2_u_r_tx;
+DMA_HandleTypeDef hdma_usart3_d_rx; // Down
+DMA_HandleTypeDef hdma_usart3_d_tx;
 
-extern uint8_t packet_received;
+uint8_t sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
+uint8_t usb_sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
 
-typedef enum {
-  UART_UP,
-  UART_RIGHT
-} UartToggle;
+extern bool packet_received;
 
 typedef enum {
-  CMD_REQUEST_SENSORS = 0x01,
-  CMD_TRANSMIT_LED_DATA = 0x02,
-  CMD_COMMIT_LEDS = 0x03
+  CMD_REQUEST_SENSORS = 0x10,
+  CMD_TRANSMIT_LED_DATA = 0x20,
+  CMD_COMMIT_LEDS = 0x30
 } Commands;
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
-static void MX_USART_INIT_generic(UART_HandleTypeDef *, USART_TypeDef *, IRQn_Type);
-static void MX_USART2_UART_Init(void);
-void startup_sequence(void);
-void usart_switch(UartToggle);
-
-uint8_t switch_ready = 0;
 
 int main(void){
   HAL_Init();
   MX_GPIO_Init();
   SystemClock_Config();
-  startup_sequence();
+  uart_init();
+  msgbus_init();
+  
   MX_USB_DEVICE_Init();
-  MX_DMA_Init();
 
-  uint8_t left = 0x00;
-  uint8_t down = 0x01;
-  uint8_t up = 0x02;
-  uint8_t right = 0x03;
-  uint8_t up_left = 0x00;
-  uint8_t up_right = 0x01;
-  uint8_t down_left = 0x02;
-  uint8_t down_right = 0x03;
-  uint8_t request_sensors = 0x10;
-  uint8_t send_lights = 0x30;
-  uint8_t send_led_data = 0x20;
-  uint8_t sensor_buffer[64];
   uint8_t led_info = 0x00;
   uint16_t segments_received = 0x0000;
   uint8_t last_frame = 0x00;
@@ -77,33 +60,81 @@ int main(void){
 
   DBG_LED1_ON();
 
-  while (1){
-    uint8_t i = 0;
-    uint8_t cmd = 0;
-    for(; i < 64; i++){
-      sensor_buffer[i] = 0;
-    } 
-    /*cmd = ((uint8_t)CMD_SEND_LED_DATA) << 8;
+  Request left_sensor_req;
+  Request down_sensor_req;
+  Request up_sensor_req;
+  Request right_sensor_req;
+
+  // This builds requests that instruct to store sensor data in sensor_buffer
+  // in relevant locations
+  BUILD_SENSOR_REQ(left_sensor_req, COMPORT_LEFT);
+  BUILD_SENSOR_REQ(down_sensor_req, COMPORT_DOWN);
+  BUILD_SENSOR_REQ(up_sensor_req, COMPORT_UP);
+  BUILD_SENSOR_REQ(right_sensor_req, COMPORT_RIGHT);
+
+  //uint8_t sensors_collected = 0x0;
+  msgbus_send_request(left_sensor_req);
+  msgbus_send_request(down_sensor_req);
+  msgbus_send_request(up_sensor_req);
+  msgbus_send_request(right_sensor_req);
+
+  uint8_t have_new_data = false;
+
+  while (1) {
+    msgbus_process_flags();
+
+    if (msgbus_have_pending_response()) {
+      Response * resp = msgbus_get_pending_response();
+
+      if (resp->request_command == CMD_REQUEST_SENSORS) {
+        // Flip a bit on when we've collected a sensor's data
+        //sensors_collected |= (1 << (uint8_t)resp->comport_id);
+        DBG_LED2_TOGGLE();
+        uint8_t offset = ((uint8_t)resp->comport_id) * 8;
+        for (uint8_t i = 0; i < 8; i++) {
+          usb_sensor_buffer[offset + i] = sensor_buffer[offset + i];
+        }
+
+        //sensors_collected |= (1 << resp->comport_id);
+
+        have_new_data = true;
+      }
+
+      // TODO: deal with responses to other sorts fo commands here
+
+    }
+
+    DBG_LED1_TOGGLE();
+    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, usb_sensor_buffer, USB_HID_PACKET_SIZE_BYTES);
+    msgbus_send_request(left_sensor_req);
+    msgbus_send_request(down_sensor_req);
+    msgbus_send_request(up_sensor_req);
+    msgbus_send_request(right_sensor_req);
+
+
+    // TODO: also receive USB here?
+
+    /*cmd = CMD_SEND_LED_DATA;
     // Left
-    HAL_UART_Transmit(&huart1, &cmd, 1, 100);
-    HAL_UART_Transmit(&huart1, sensor_buffer, 64, 100);
+    HAL_UART_Transmit(&huart1_l, &cmd, 1, 100);
+    HAL_UART_Transmit(&huart1_l, sensor_buffer, 64, 100);
     cmd = send_lights;
-    HAL_UART_Transmit(&huart1, &cmd, 1, 100);*/
+    HAL_UART_Transmit(&huart1_l, &cmd, 1, 100);*/
     /*if(segments_received == 0xFFFF){
-      cmd = send_lights;
+      cmd = CMD_COMMIT_LED_DATA;
       // Left
-      HAL_UART_Transmit(&huart1, &cmd, 1, 1);
+      HAL_UART_Transmit(&huart1_l, &cmd, 1, 1);
       
       // Up
       usart_switch(USART_UP);
-      HAL_UART_Transmit(&huart2, &cmd, 1, 1);
+      HAL_UART_Transmit(&huart2_u_r, &cmd, 1, 1);
       
       // Right
       usart_switch(USART_RIGHT);
-      HAL_UART_Transmit(&huart2, &cmd, 1, 1);
+      HAL_UART_Transmit(&huart2_u_r, &cmd, 1, 1);
       
       // Down
-      HAL_UART_Transmit(&huart3, &cmd, 1, 1);
+      HAL_UART_Transmit(&huart3_d, &cmd, 1, 1);
       segments_received = 0x0000;
     }
 
@@ -122,148 +153,31 @@ int main(void){
     
       if(panel == 0x00){
         cmd = send_led_data;
-        HAL_UART_Transmit(&huart1, &cmd, 1, 1);
-        HAL_UART_Transmit(&huart1, hhid->Report_buf, 64, 2);
+        HAL_UART_Transmit(&huart1_l, &cmd, 1, 1);
+        HAL_UART_Transmit(&huart1_l, hhid->Report_buf, 64, 2);
       }
     
       if(panel == 0x01){
         cmd = send_led_data;
-        HAL_UART_Transmit(&huart3, &cmd, 1, 1);
-        HAL_UART_Transmit(&huart3, hhid->Report_buf, 64, 2);
+        HAL_UART_Transmit(&huart3_d, &cmd, 1, 1);
+        HAL_UART_Transmit(&huart3_d, hhid->Report_buf, 64, 2);
       }
     
       if(panel == 0x02){
         usart_switch(USART_UP);
         cmd = send_led_data;
-        HAL_UART_Transmit(&huart2, &cmd, 1, 1);
-        HAL_UART_Transmit(&huart2, hhid->Report_buf, 64, 2);
+        HAL_UART_Transmit(&huart2_u_r, &cmd, 1, 1);
+        HAL_UART_Transmit(&huart2_u_r, hhid->Report_buf, 64, 2);
       }
     
       if(panel == 0x03){
         usart_switch(USART_RIGHT);
         cmd = send_led_data;
-        HAL_UART_Transmit(&huart2, &cmd, 1, 1);
-        HAL_UART_Transmit(&huart2, hhid->Report_buf, 64, 2);
+        HAL_UART_Transmit(&huart2_u_r, &cmd, 1, 1);
+        HAL_UART_Transmit(&huart2_u_r, hhid->Report_buf, 64, 2);
       }
     }*/
-      
-    cmd = request_sensors;
-    // Mich note: timeouts are in multiples of systick.
-    // This is set to 1ms, so Timeout=1 == 1ms
-    
-    // Left
-    HAL_UART_Transmit(&huart1, &cmd, 1, 3);
-
-    if (HAL_UART_Receive(&huart1, sensor_buffer, 8, 30) == HAL_OK) {
-      DBG_LED2_ON();
-      DBG_LED3_OFF();
-    } else {
-      DBG_LED2_OFF();
-      DBG_LED3_ON();
-    }
-
-    // Up
-    //usart_switch(UART_UP);
-    //HAL_UART_Transmit(&huart2, &cmd, 1, 1);
-    //HAL_UART_Receive(&huart2, sensor_buffer + 16, 8, 1);
-    
-    // Down
-    //HAL_UART_Transmit(&huart3, &cmd, 1, 1);
-    //HAL_UART_Receive(&huart3, sensor_buffer + 8, 8, 1);
-    
-    // Right
-    //usart_switch(UART_RIGHT);
-    //HAL_UART_Transmit(&huart2, &cmd, 1, 1);
-    //HAL_UART_Receive(&huart2, sensor_buffer + 24, 8, 1);
-    
-    USBD_CUSTOM_HID_SendReport(&hUsbDeviceFS, sensor_buffer, 64);
   }
-}
-
-void USART1_IRQHandler(){
-  HAL_UART_IRQHandler(&huart1);
-}
-
-void USART2_IRQHandler(){
-  switch_ready = 1;
-  HAL_UART_IRQHandler(&huart2);
-}
-
-void USART3_IRQHandler(){
-  HAL_UART_IRQHandler(&huart3);
-}
-
-void startup_sequence(void){
-  GPIO_InitTypeDef startup_gpio = {0};
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  //Set up GPIO input direction for RS-485 during start-up and USART directions on transceivers.
-  startup_gpio.Pin = GPIO_PIN_2 | GPIO_PIN_7 | GPIO_PIN_9 | GPIO_PIN_13;
-  startup_gpio.Pin |= GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_6 | GPIO_PIN_8 | GPIO_PIN_14 | GPIO_PIN_15;
-  startup_gpio.Mode = GPIO_MODE_OUTPUT_PP;
-  startup_gpio.Pull = GPIO_NOPULL;
-  startup_gpio.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &startup_gpio);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2 | GPIO_PIN_7 | GPIO_PIN_9 | GPIO_PIN_13, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_6 | GPIO_PIN_14, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_8 | GPIO_PIN_15, GPIO_PIN_RESET);
-  startup_gpio.Pin = GPIO_PIN_5;
-  HAL_GPIO_Init(GPIOA, &startup_gpio);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-  //Set up GPIO pins for board ready state.
-  startup_gpio.Pin = GPIO_PIN_5 | GPIO_PIN_12;
-  startup_gpio.Mode = GPIO_MODE_INPUT;
-  HAL_GPIO_Init(GPIOB, &startup_gpio);
-  startup_gpio.Pin = GPIO_PIN_4 | GPIO_PIN_8;
-  startup_gpio.Mode = GPIO_MODE_INPUT;
-  HAL_GPIO_Init(GPIOA, &startup_gpio);
-  //Wait until all boards have asserted high.
-  while(!HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8)){} // LEFT
-  //while(!HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12)){} // DOWN
-  //while(!HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4)){} // UP
-  //while(!HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5)){} // RIGHT
-  //Set up USART modes
-
-  MX_USART_INIT_generic(&huart1, USART1, USART1_IRQn);
-  //MX_USART2_UART_Init();
-  //MX_USART_INIT_generic(&huart3, USART3, USART3_IRQn);
-}
-
-void usart_switch(UartToggle which) {
-  HAL_UART_MspDeInit(&huart2);
-  HAL_UART_DeInit(&huart2);
-  GPIO_InitTypeDef usart_gpio = {0};
-
-  if (which == UART_UP) {
-    usart_gpio.Pin = GPIO_PIN_15;
-    usart_gpio.Mode = GPIO_MODE_ANALOG;
-    usart_gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &usart_gpio);
-    usart_gpio.Pin = GPIO_PIN_3;
-    HAL_GPIO_Init(GPIOB, &usart_gpio);
-    usart_gpio.Pin =GPIO_PIN_2 | GPIO_PIN_3;
-    usart_gpio.Mode = GPIO_MODE_AF_PP;
-    usart_gpio.Pull = GPIO_NOPULL;
-    usart_gpio.Alternate = GPIO_AF7_USART2;
-    usart_gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &usart_gpio);
-  } else { // Right
-    usart_gpio.Pin = GPIO_PIN_2 | GPIO_PIN_3;
-    usart_gpio.Mode = GPIO_MODE_ANALOG;
-    usart_gpio.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOA, &usart_gpio);
-    usart_gpio.Pin = GPIO_PIN_15;
-    usart_gpio.Mode = GPIO_MODE_AF_PP;
-    usart_gpio.Pull = GPIO_NOPULL;
-    usart_gpio.Alternate = GPIO_AF7_USART2;
-    usart_gpio.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOA, &usart_gpio);
-    usart_gpio.Pin = GPIO_PIN_3;
-    HAL_GPIO_Init(GPIOB, &usart_gpio);
-  }
-
-  MX_USART2_UART_Init();
-  HAL_UART_MspInit(&huart2);
 }
 
 void SystemClock_Config(void){
@@ -279,7 +193,7 @@ void SystemClock_Config(void){
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK){
-    Error_Handler();
+    Error_Handler(1000);
   }
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
@@ -289,7 +203,7 @@ void SystemClock_Config(void){
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK){
-    Error_Handler();
+    Error_Handler(1000);
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
                               |RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_USART3;
@@ -298,106 +212,40 @@ void SystemClock_Config(void){
   PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
   PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK){
-    Error_Handler();
+    Error_Handler(1000);
   }
-}
-
-static void MX_USART2_UART_Init(void)
-{
-  MX_USART_INIT_generic(&huart2, USART2, USART2_IRQn);
-}
-
-static void MX_USART_INIT_generic(
-  UART_HandleTypeDef *huart, USART_TypeDef *usart, IRQn_Type irqn)
-{
-  huart->Instance = usart;
-  huart->Init.BaudRate = 512000;
-  huart->Init.WordLength = UART_WORDLENGTH_8B;
-  huart->Init.StopBits = UART_STOPBITS_2;
-  huart->Init.Parity = UART_PARITY_NONE;
-  huart->Init.Mode = UART_MODE_TX_RX;
-  huart->Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart->Init.OverSampling = UART_OVERSAMPLING_16;
-  huart->Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart->AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  HAL_NVIC_SetPriority(irqn, 0, 0);
-  HAL_NVIC_EnableIRQ(irqn);
-  if (HAL_UART_Init(huart) != HAL_OK){
-    Error_Handler();
-  }
-}
-
-static void MX_DMA_Init(void) {
-  __HAL_RCC_DMA1_CLK_ENABLE();
-  HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn);
-
-  HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
-
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
-
-  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
-
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
-
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 }
 
 static void MX_GPIO_Init(void){
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
 
+  // -- Write relevant GPIO pins LOW
+
+  // A 0,1,6,7: Debug pins
+  HAL_GPIO_WritePin(GPIOA, 
+      GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_6 | GPIO_PIN_7,
+      GPIO_PIN_RESET);
+
+  // C 13,14,15: Status LEDs
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
 
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_5|GPIO_PIN_6 
-                          |GPIO_PIN_7, GPIO_PIN_RESET);
+  // -- configure pin modes
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_13 
-                          |GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_4|GPIO_PIN_6 
-                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
+  // A 0,1,6,7: Debug Pins (outputs)
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_6|GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  // C 13,14,15: Status LEDS (outputs)
   GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_5|GPIO_PIN_6 
-                          |GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_13 
-                          |GPIO_PIN_14|GPIO_PIN_15|GPIO_PIN_4|GPIO_PIN_6 
-                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-}
-
-void Error_Handler(void){
-
 }
 
 #ifdef  USE_FULL_ASSERT

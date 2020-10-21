@@ -38,6 +38,7 @@ BUILD_DIR = build
 C_SOURCES =  \
 Src/main.c \
 Src/msgbus.c \
+Src/req_queue.c \
 Src/uart.c \
 Src/usb_device.c \
 Src/usbd_conf.c \
@@ -72,7 +73,6 @@ Middlewares/ST/STM32_USB_Device_Library/Class/CustomHID/Src/usbd_customhid.c
 # ASM sources
 ASM_SOURCES =  \
 startup_stm32f303xc.s
-
 
 #######################################
 # binaries

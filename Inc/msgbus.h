@@ -2,32 +2,13 @@
 #define __MESSAGE_BUS_H
 
 #include "stm32f3xx.h"
+#include "request.h"
+#include "req_queue.h"
 #include "uart.h"
+#include "commands.h"
 
 #define MAX_REQUEST_DATA_BYTES (64U)
 #define MAX_RESPONSE_DATA_BYTES (64U)
-
-typedef struct {
-    // Which port this request is being made over
-    ComportId comport_id;
-
-    // Command byte being sent first
-    uint8_t request_command;
-
-    // Pointer to start of data to send after command byte (separate transmission)
-    // Can be NULL only if send_data_len == 0
-    uint8_t * send_data;
-
-    // Number of bytes to send starting from send_data pointer
-    uint16_t send_data_len;
-
-    // Pointer to location for response data
-    uint8_t * response_data;
-
-    // Number of bytes expected as response
-    // Set to 0 to not expect any response after sending request_command + send_data
-    uint16_t response_len;
-} Request;
 
 typedef struct {
     // Which port this response came in from
@@ -35,7 +16,7 @@ typedef struct {
 
     // What command was initially sent to get this in response
     // Copied from the request struct that caused this response
-    uint8_t request_command;
+    Commands request_command;
 
     // Pointer to data sent in the response
     uint8_t * data;
@@ -48,9 +29,6 @@ typedef struct {
 typedef enum {
     // Not been given a request to send
     Status_Idle,
-
-    // Been given a request to send, but the port is not currently active
-    Status_Queued,
 
     // DMA for sending the command byte has started
     Status_Sending_Command,
@@ -80,6 +58,9 @@ typedef struct {
     // Request this port is currently working on, or queued for
     // being worked on when selected/
     Request current_request;
+
+    // Queue of requests in case we're busy
+    RequestQueue req_queue;
 
     // Response the current request is working with, only relevant if
     // current_request.response_len > 0

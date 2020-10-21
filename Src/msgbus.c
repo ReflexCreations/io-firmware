@@ -1,5 +1,7 @@
 #include "msgbus.h"
 #include "uart.h"
+#include "request.h"
+#include "req_queue.h"
 #include "error_handler.h"
 
 #define RESPONSE_QUEUE_MAX 4
@@ -10,7 +12,9 @@
     state.selected = is_selected; \
     state.current_request = Request_Default; \
     state.current_response = Response_Default; \
-    state.interrupt_flags = 0x00;
+    state.interrupt_flags = 0x00; \
+    req_queue_init(&state.req_queue);
+
 
 #define SWITCH_PORTS_IF_DONE() \
     if ((selected_ports.first->status == Status_Done \
@@ -137,21 +141,17 @@ void msgbus_send_request(Request request) {
         Error_Handler(250);
     }
 
-    // Not Idle? Not taking requests right now.
-    if (portState->status != Status_Idle) return;
+    // Not Idle? Stick it on the queue
+    // Also if port is not selected we'll queue it for later
+    if (portState->status != Status_Idle || !portState->selected) {
+        req_queue_add(&portState->req_queue, request);
+        return;
+    }
 
     // Copy the request over, into the "canonical" location
     // msgbus will use to refer to it from here on
     portState->current_request = request;
-
-    // If the port is currently selected for communication, start off the
-    // request, otherwise mark this port as having a queued request, for
-    // when it becomes selected
-    if (portState->selected) {
-        start_request(&portState->current_request);
-    } else {
-        portState->status = Status_Queued;
-    }
+    start_request(&portState->current_request);
 }
 
 uint8_t msgbus_have_pending_response() {
@@ -187,6 +187,8 @@ static void process_send_complete(PortState * port_state) {
 
             if (req->send_data_len > 0) {
 
+                port_state->status = Status_Sending_Data;
+
                 // Also prepare to receive data now if we're expecting any
                 if (req->response_len > 0) {
                     uart_receive(
@@ -204,7 +206,6 @@ static void process_send_complete(PortState * port_state) {
                     req->send_data_len
                 );
 
-                port_state->status = Status_Sending_Data;
 
                 return;
 
@@ -260,6 +261,8 @@ static void process_receive_complete(PortState * port_state) {
         return; // Although we'd never hit this point.
     }
 
+    port_state->status = Status_Done;
+
     resp->comport_id = port_state->comport_id;
     resp->data = req->response_data;
     resp->data_length = port_state->current_request.response_len;
@@ -267,8 +270,6 @@ static void process_receive_complete(PortState * port_state) {
 
     queue_add(resp);
 
-    port_state->status = Status_Done;
-    DBG_LED2_TOGGLE();
     SWITCH_PORTS_IF_DONE();
 }
 
@@ -292,14 +293,23 @@ static void switch_ports() {
     unselected_ports.first->status = Status_Idle;
     unselected_ports.second->status = Status_Idle;
 
+    uint8_t any_reqs = false;
     // If newly-selected ports had queued requests, start them off now
-    if (selected_ports.first->status == Status_Queued) {
+    if (selected_ports.first->req_queue.count > 0) {
+        Request req = req_queue_take(&selected_ports.first->req_queue);
+        selected_ports.first->current_request = req;
+        any_reqs = true;
         start_request(&selected_ports.first->current_request);
-    }
+    } 
 
-    if (selected_ports.second->status == Status_Queued) {
+    if (selected_ports.second->req_queue.count > 0) {
+        Request req = req_queue_take(&selected_ports.second->req_queue);
+        selected_ports.second->current_request = req;
+        any_reqs = true;
         start_request(&selected_ports.second->current_request);
     }
+
+    if (!any_reqs) DBG_LED3_ON();
 }
 
 // Begin a new request
@@ -307,6 +317,8 @@ static void start_request(Request * request) {
     // Assumption at this stage: request has valid comport_id
 
     PortState * port_state = get_port_state(request->comport_id);
+
+    port_state->status = Status_Sending_Command;
 
     if (request->send_data_len == 0 && request->response_len > 0) {
         uart_receive(
@@ -322,7 +334,6 @@ static void start_request(Request * request) {
         1 // number of bytes to send
     );
 
-    port_state->status = Status_Sending_Command;
 }
 
 static PortState * get_port_state(ComportId comport_id) {

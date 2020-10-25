@@ -21,9 +21,9 @@
 // Change these if depending on what you've got plugged in
 // Only to be used for the ALL_INITIALIZED check, not conditional
 // init or anything, just to keep things simple
-#define PANEL_LEFT_CONNECTED  (1) 
+#define PANEL_LEFT_CONNECTED  (0) 
 #define PANEL_UP_CONNECTED    (1) 
-#define PANEL_DOWN_CONNECTED  (1)
+#define PANEL_DOWN_CONNECTED  (0)
 #define PANEL_RIGHT_CONNECTED (1)
 
 #define PANEL_LEFT_INITIALIZED (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8))
@@ -59,7 +59,7 @@ DMA_HandleTypeDef hdma_usart3_d_rx; // Down
 DMA_HandleTypeDef hdma_usart3_d_tx;
 
 // up or right connector, this indicates which one is configured on USART2
-ComportId switched_uart = COMPORT_NONE;
+ComportId switched_uart = Comport_None;
 
 static SendCompleteHandler send_complete_handler = NULL;
 static ReceiveCompleteHandler receive_complete_handler = NULL;
@@ -127,7 +127,7 @@ void uart_set_on_receive_complete_handler(ReceiveCompleteHandler handler) {
 
 void uart_connect_port(ComportId comport_id) {
     // Only right/up need any special work, so others are no-op.
-    if (comport_id != COMPORT_RIGHT && comport_id != COMPORT_UP) return;
+    if (comport_id != Comport_Right && comport_id != Comport_Up) return;
 
     // Don't do anything if the switched uart already matches this one
     if (switched_uart == comport_id) return;
@@ -140,7 +140,7 @@ void uart_connect_port(ComportId comport_id) {
     uint32_t af_pins_a, af_pins_b;
     uint32_t float_pins_a, float_pins_b;
 
-    uint8_t is_up = comport_id == COMPORT_UP;
+    uint8_t is_up = comport_id == Comport_Up;
 
     af_pins_a = is_up ? UART2_UP_PINS_A : UART2_RIGHT_PINS_A;
     af_pins_b = is_up ? UART2_UP_PINS_B : UART2_RIGHT_PINS_B;
@@ -274,8 +274,8 @@ static void init_periph(
     huart->Init.Parity = UART_PARITY_NONE;
     huart->Init.Mode = UART_MODE_TX_RX;
     huart->Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart->Init.OverSampling = UART_OVERSAMPLING_8; // 16
-    huart->Init.OneBitSampling = UART_ONE_BIT_SAMPLE_ENABLE; // DIS
+    huart->Init.OverSampling = UART_OVERSAMPLING_16;
+    huart->Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE; // DIS
     huart->AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
 
     HAL_NVIC_SetPriority(irqn, 0, 0);
@@ -325,11 +325,11 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (send_complete_handler == NULL) return;
 
     if (huart == &huart1_l) {
-        send_complete_handler(COMPORT_LEFT);
+        send_complete_handler(Comport_Left);
     } else if (huart == &huart2_u_r) {
         send_complete_handler(switched_uart);
     } else {
-        send_complete_handler(COMPORT_DOWN);
+        send_complete_handler(Comport_Down);
     }
 }
 
@@ -337,20 +337,20 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (receive_complete_handler == NULL) return;
 
     if (huart == &huart1_l) {
-        receive_complete_handler(COMPORT_LEFT);
+        receive_complete_handler(Comport_Left);
     } else if (huart == &huart2_u_r) {
         receive_complete_handler(switched_uart);
     } else {
-        receive_complete_handler(COMPORT_DOWN);
+        receive_complete_handler(Comport_Down);
     }
 }
 
 static UART_HandleTypeDef * get_uart_handle(ComportId comport_id) {
     switch (comport_id) {
-        case COMPORT_LEFT: return &huart1_l;
-        case COMPORT_DOWN: return &huart3_d;
-        case COMPORT_UP: return &huart2_u_r;
-        case COMPORT_RIGHT: return &huart2_u_r;
+        case Comport_Left: return &huart1_l;
+        case Comport_Down: return &huart3_d;
+        case Comport_Up: return &huart2_u_r;
+        case Comport_Right: return &huart2_u_r;
         default: return NULL;
     }
 }

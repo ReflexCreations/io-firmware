@@ -7,6 +7,8 @@
 #include "msgbus.h"
 #include "debug_leds.h"
 #include "error_handler.h"
+#include "commtests.h"
+#include "ledtests.h"
 
 #define USB_HID_PACKET_SIZE_BYTES (64U)
 #define BYTES_PER_SEGMENT (64U)
@@ -19,7 +21,7 @@
 
 #define BUILD_SENSOR_REQ(req, comport) do { \
   req.comport_id = comport; \
-  req.request_command = CMD_REQUEST_SENSORS; \
+  req.request_command = Command_Request_Sensors; \
   req.send_data = NULL; \
   req.send_data_len = 0; \
   req.response_data = sensor_buffer + ((uint8_t)comport * 8); \
@@ -29,7 +31,7 @@
 
 #define BUILD_TRANSMIT_LEDS_REQ(req, comport, segment) do {\
   req.comport_id = comport; \
-  req.request_command = CMD_TRANSMIT_LED_DATA; \
+  req.request_command = Command_Process_LED_Segment; \
   req.send_data = led_buffer + \
     (comport * BYTES_PER_PANEL) + (segment * BYTES_PER_SEGMENT); \
   req.send_data_len = BYTES_PER_SEGMENT; \
@@ -39,7 +41,7 @@
 
 #define BUILD_COMMIT_LEDS_REQ(req, comport) do { \
   req.comport_id = comport; \
-  req.request_command = CMD_COMMIT_LEDS; \
+  req.request_command = Command_Commit_LEDs; \
   req.send_data = NULL; \
   req.send_data_len = 0; \
   req.response_data = NULL; \
@@ -61,6 +63,9 @@ DMA_HandleTypeDef hdma_usart3_d_tx;
 uint8_t sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
 uint8_t usb_sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
 uint8_t led_buffer[LED_ARRAY_SIZE];
+
+uint8_t test_buffer_2b[2];
+uint8_t test_buffer_64b[64];
 
 uint16_t segments_received = 0x0000;
 
@@ -109,15 +114,66 @@ int main(void){
 
   // This builds requests that instruct to store sensor data in sensor_buffer
   // in relevant locations
-  BUILD_SENSOR_REQ(left_sensor_req, COMPORT_LEFT);
-  BUILD_SENSOR_REQ(down_sensor_req, COMPORT_DOWN);
-  BUILD_SENSOR_REQ(up_sensor_req, COMPORT_UP);
-  BUILD_SENSOR_REQ(right_sensor_req, COMPORT_RIGHT);
+  BUILD_SENSOR_REQ(left_sensor_req, Comport_Left);
+  BUILD_SENSOR_REQ(down_sensor_req, Comport_Down);
+  BUILD_SENSOR_REQ(up_sensor_req, Comport_Up);
+  BUILD_SENSOR_REQ(right_sensor_req, Comport_Right);
 
-  msgbus_send_request(left_sensor_req);
-  msgbus_send_request(down_sensor_req);
-  msgbus_send_request(up_sensor_req);
-  msgbus_send_request(right_sensor_req);
+  //msgbus_send_request(left_sensor_req);
+  //msgbus_send_request(down_sensor_req);
+  //msgbus_send_request(up_sensor_req);
+  //msgbus_send_request(right_sensor_req);
+
+  ComportId port_1 = Comport_Down;
+  ComportId port_2 = Comport_Right;
+
+  if (commtest_dual_receive_2bytes(port_1, port_2)
+      && commtest_dual_receive_64bytes(port_1, port_2)
+      && commtest_dual_double_values(port_1, port_2)) {
+    DBG_LED3_ON();
+  } else {
+    DBG_LED3_OFF();
+  }
+
+  ledtests_hardcoded_LEDs(Comport_Right);
+  msgbus_wait_for_idle(Comport_Right);
+
+  DBG_LED3_OFF();
+
+  //HAL_Delay(1000);
+
+
+  if (commtest_receive_2bytes(Comport_Right)) {
+    DBG_LED3_ON();
+  } else {
+    DBG_LED3_OFF();
+  }
+
+  uint8_t max_br = 0x31;
+  uint16_t frame_ms = 10;
+  while (1) {
+    for (uint8_t i = 0; i <= max_br; i++) {
+      HAL_Delay(frame_ms);
+      ledtests_solid_color_LEDs(Comport_Right, max_br - i, i, 0x00);
+      msgbus_wait_for_idle(Comport_Right);
+    }
+    for (uint8_t i = 0; i <= max_br; i++) {
+      HAL_Delay(frame_ms);
+      ledtests_solid_color_LEDs(Comport_Right, 0, max_br - i, i);
+      msgbus_wait_for_idle(Comport_Right);
+    }
+    for (uint8_t i = 0; i <= max_br; i++) {
+      HAL_Delay(frame_ms);
+      ledtests_solid_color_LEDs(Comport_Right, i, 0, max_br - i);
+      msgbus_wait_for_idle(Comport_Right);
+    }
+  }
+
+  // TODO: a test for sending a full buffer of LED data from IO board
+
+  while(1) {
+    msgbus_process_flags();
+  }
 
   while (1) {
     msgbus_process_flags();
@@ -126,22 +182,31 @@ int main(void){
       DBG_LED1_TOGGLE();
       Response * resp = msgbus_get_pending_response();
 
-      if (resp->request_command == CMD_REQUEST_SENSORS) {
-        DBG_LED2_TOGGLE();
+      if (resp->request_command == Command_Request_Sensors) {
+        //DBG_LED2_TOGGLE();
         uint8_t offset = ((uint8_t)resp->comport_id) * 8;
         for (uint8_t i = 0; i < 8; i++) {
           usb_sensor_buffer[offset + i] = sensor_buffer[offset + i];
         }
       }
 
-      // TODO: deal with responses to other sorts fo commands here
+      if (resp->request_command == Command_Test_Expect_2B) {
+        if (test_buffer_2b[0] == 0xBE && test_buffer_2b[1] == 0xEF) {
+          DBG_LED3_ON();
+        }
+      }
+
+      // TODO: deal with responses to other sorts of commands here
 
     }
+  }
+
+  while(0) {
 
     // -------------------------------------
     // TODO current issue to investigate
     //
-    // it seems CMD_COMMIT_LEDS is never being sent, at least not received
+    // it seems Command_Commit_LEDs is never being sent, at least not received
     // on the panel side according to debug LEDS.
     // Find out if on here we think we're sending it with debug LED
     // If not, well, figure out why not.
@@ -155,23 +220,23 @@ int main(void){
 
     if (segments_received == COMPLETE_FRAME) {
       Request commit_req;
-      BUILD_COMMIT_LEDS_REQ(commit_req, COMPORT_LEFT);
+      BUILD_COMMIT_LEDS_REQ(commit_req, Comport_Left);
 
       msgbus_send_request(commit_req);
-      commit_req.comport_id = COMPORT_DOWN;
+      commit_req.comport_id = Comport_Down;
       msgbus_send_request(commit_req);
-      commit_req.comport_id = COMPORT_UP;
+      commit_req.comport_id = Comport_Up;
       msgbus_send_request(commit_req);
-      commit_req.comport_id = COMPORT_RIGHT;
-      msgbus_send_request(commit_req);
-      DBG_LED3_ON();
+      //commit_req.comport_id = COMPORT_RIGHT;
+      //msgbus_send_request(commit_req);
+      //DBG_LED3_ON();
 
       segments_received = 0x0000;
     }
 
     if (packet_received) {
-      DBG_LED3_TOGGLE();
-      packet_header = hhid->Report_buf[0];
+      //DBG_LED3_TOGGLE();
+      packet_header = rep_buf[0];
       last_packet_header = packet_header;
       // Not sure the enum type serves any purpose here actually
       uint8_t panel = (packet_header >> 6) & 0x03;
@@ -182,11 +247,11 @@ int main(void){
           panel * BYTES_PER_PANEL + segment * BYTES_PER_SEGMENT;
 
       for (uint8_t i = 0; i < USB_HID_PACKET_SIZE_BYTES; i++) {
-        led_buffer[i + buffer_offset] = hhid->Report_buf[i];
+        led_buffer[i + buffer_offset] = rep_buf[i];
       }
 
       if (frame != previous_frame) {
-        segments_received = 0x0000;
+        //segments_received = 0x0000;
       }
 
       previous_frame = frame;
@@ -200,7 +265,7 @@ int main(void){
     msgbus_send_request(left_sensor_req);
     msgbus_send_request(down_sensor_req);
     msgbus_send_request(up_sensor_req);
-    msgbus_send_request(right_sensor_req);
+    //msgbus_send_request(right_sensor_req);
   }
 }
 

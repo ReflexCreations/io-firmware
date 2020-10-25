@@ -96,6 +96,10 @@ uint8_t msgbus_have_pending_response();
 // response, Error_Handler() will be invoked.
 Response * msgbus_get_pending_response();
 
+PortStatus msgbus_port_status(ComportId);
+
+void msgbus_wait_for_idle(ComportId);
+
 void msgbus_switch_ports_if_done();
 
 #endif

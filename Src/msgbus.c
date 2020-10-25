@@ -76,7 +76,7 @@ static uint8_t any_interrupt_flags;
 
 // Init value for this struct
 Request Request_Default = {
-    COMPORT_NONE, // comport_id
+    Comport_None, // comport_id
     0x00, // request_command
     NULL, // send_data
     0, // send_data_len
@@ -84,7 +84,7 @@ Request Request_Default = {
 };
 
 Response Response_Default = { 
-    COMPORT_NONE, // comport_id
+    Comport_None, // comport_id
     0x00, // request_command;
     NULL, // data
     0, // data_length
@@ -106,10 +106,10 @@ static Response * queue_take();
 
 
 void msgbus_init() {
-    INIT_PORT_STATE(port_state_left, COMPORT_LEFT, true);
-    INIT_PORT_STATE(port_state_up, COMPORT_UP, true);
-    INIT_PORT_STATE(port_state_right, COMPORT_RIGHT, false);
-    INIT_PORT_STATE(port_state_down, COMPORT_DOWN, false);
+    INIT_PORT_STATE(port_state_left, Comport_Left, true);
+    INIT_PORT_STATE(port_state_up, Comport_Up, true);
+    INIT_PORT_STATE(port_state_right, Comport_Right, false);
+    INIT_PORT_STATE(port_state_down, Comport_Down, false);
 
     selected_ports.first = &port_state_left;
     selected_ports.second = &port_state_up;
@@ -123,7 +123,10 @@ void msgbus_init() {
 }
 
 void msgbus_process_flags() {
-    if (!ANY_INTERRUPT_FLAGS) return;
+    if (!ANY_INTERRUPT_FLAGS) {
+        SWITCH_PORTS_IF_DONE();
+        return;
+    }
     // I really ought to use inline functions instead of macros for this
     PROCESS_FLAGS(port_state_left);
     PROCESS_FLAGS(port_state_down);
@@ -166,6 +169,28 @@ void msgbus_switch_ports_if_done() {
     SWITCH_PORTS_IF_DONE();
 }
 
+PortStatus msgbus_port_status(ComportId comport_id) {
+    PortState * port_state = get_port_state(comport_id);
+    if (port_state == NULL) {
+        Error_Handler(255);
+    }
+
+    return port_state->status;
+}
+
+void msgbus_wait_for_idle(ComportId comport_id) {
+    PortState * port_state = get_port_state(comport_id);
+
+    if (port_state == NULL) {
+        Error_Handler(256);
+    }
+
+    while (port_state->status != Status_Idle
+            || port_state->req_queue.count > 0) {
+        msgbus_process_flags();
+    }
+}
+
 static void uart_on_send_complete(ComportId comport_id) {
     PortState * port_state = get_port_state(comport_id);
     SET_SEND_COMPLETE(port_state);
@@ -205,6 +230,7 @@ static void process_send_complete(PortState * port_state) {
                     req->send_data,
                     req->send_data_len
                 );
+
 
 
                 return;
@@ -308,8 +334,6 @@ static void switch_ports() {
         any_reqs = true;
         start_request(&selected_ports.second->current_request);
     }
-
-    if (!any_reqs) DBG_LED3_ON();
 }
 
 // Begin a new request
@@ -338,10 +362,10 @@ static void start_request(Request * request) {
 
 static PortState * get_port_state(ComportId comport_id) {
     switch (comport_id) {
-        case COMPORT_LEFT: return &port_state_left;
-        case COMPORT_DOWN: return &port_state_down;
-        case COMPORT_UP: return &port_state_up;
-        case COMPORT_RIGHT: return &port_state_right;
+        case Comport_Left: return &port_state_left;
+        case Comport_Down: return &port_state_down;
+        case Comport_Up: return &port_state_up;
+        case Comport_Right: return &port_state_right;
         default: return NULL;
     }
 }

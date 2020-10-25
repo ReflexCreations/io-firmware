@@ -8,11 +8,11 @@
 // msgbus; don't change them.
 // They are used for offsetting in memory.
 typedef enum {
-    COMPORT_NONE = 0xFF,
-    COMPORT_LEFT = 0x00,
-    COMPORT_DOWN = 0x01,
-    COMPORT_UP = 0x02,
-    COMPORT_RIGHT = 0x03
+    Comport_None  = 0xFF,
+    Comport_Left  = 0x00,
+    Comport_Down  = 0x01,
+    Comport_Up    = 0x02,
+    Comport_Right = 0x03
 } ComportId;
 
 typedef void (* SendCompleteHandler)(ComportId);

@@ -46,6 +46,8 @@ Src/usbd_desc.c \
 Src/usbd_custom_hid_if.c \
 Src/stm32f3xx_it.c \
 Src/stm32f3xx_hal_msp.c \
+Src/commtests.c \
+Src/ledtests.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_tim.c \

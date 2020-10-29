@@ -10,6 +10,8 @@
 #define MAX_REQUEST_DATA_BYTES (64U)
 #define MAX_RESPONSE_DATA_BYTES (64U)
 
+#define MSG_ACKNOWLEGE (0xACU)
+
 typedef struct {
     // Which port this response came in from
     ComportId comport_id;
@@ -33,8 +35,16 @@ typedef enum {
     // DMA for sending the command byte has started
     Status_Sending_Command,
 
+    // DMA for receiving the "acknowledge" message active, after which we can 
+    // carry on
+    Status_Awaiting_Command_Ack,
+
     // DMA for sending the data has started
     Status_Sending_Data,
+
+    // DMA for receiving the "acknlowedge" message active, after whch we can
+    // carry on
+    Status_Awaiting_Data_Ack,
 
     // DMA for receiving data has been started
     Status_Receiving,

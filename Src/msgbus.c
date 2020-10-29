@@ -42,6 +42,8 @@
 #define RECEIVE_COMPLETE_IS_SET(__PORTSTATE) \
     (__PORTSTATE.interrupt_flags & 0x02)
 
+// Note: it's important for the state machine that process_send_complete
+// is called before process_receive_complete.
 #define PROCESS_FLAGS(__PORTSTATE) \
     if (SEND_COMPLETE_IS_SET(__PORTSTATE)) { \
         process_send_complete(&__PORTSTATE); \
@@ -50,7 +52,6 @@
     if (RECEIVE_COMPLETE_IS_SET(__PORTSTATE)) { \
         process_receive_complete(&__PORTSTATE); \
     }
-
 
 #define ANY_INTERRUPT_FLAGS (\
     port_state_left.interrupt_flags \
@@ -70,6 +71,8 @@ static Response * queue_responses[RESPONSE_QUEUE_MAX];
 static int8_t queue_front = 0;
 static int8_t queue_rear = -1;
 static uint8_t queue_count = 0;
+
+static uint8_t acknowledged = 0x00;
 
 // Non-0 if there's any interrupt flags
 static uint8_t any_interrupt_flags;
@@ -92,7 +95,9 @@ Response Response_Default = {
 
 static void switch_ports();
 static void start_request(Request *);
-static PortState * get_port_state(ComportId comport_id);
+static PortState * get_port_state(ComportId);
+
+static void expect_acknowledge(ComportId);
 
 // Should be given to uart as function pointers
 static void uart_on_send_complete(ComportId);
@@ -209,44 +214,13 @@ static void process_send_complete(PortState * port_state) {
     switch (port_state->status) {
 
         case Status_Sending_Command:
-
-            if (req->send_data_len > 0) {
-
-                port_state->status = Status_Sending_Data;
-
-                // Also prepare to receive data now if we're expecting any
-                if (req->response_len > 0) {
-                    uart_receive(
-                        port_state->comport_id,
-                        req->response_data,
-                        req->response_len
-                    );
-                }
-
-                // Have additional data to send; begin sending data, update
-                // status, then we're done here.
-                uart_send(
-                    port_state->comport_id,
-                    req->send_data,
-                    req->send_data_len
-                );
-
-
-
-                return;
-
+            if (req->send_data_len == 0 && req->response_len != 0) {
+                port_state->status = Status_Receiving;
             } else {
-                // We'll have already started receiving dma, so only update
-                // Status
-                if (req->response_len > 0) {
-                    port_state->status = Status_Receiving;
-                } else {
-                    port_state->status = Status_Done;
-                    SWITCH_PORTS_IF_DONE();
-                }
-
-                return;
+                port_state->status = Status_Awaiting_Command_Ack;
             }
+
+            break;
 
         case Status_Sending_Data:
             // Finished sending additional data, now see if we should expect
@@ -255,7 +229,7 @@ static void process_send_complete(PortState * port_state) {
                 port_state->status = Status_Receiving;
                 return;
             } else {
-                port_state->status = Status_Done;
+                port_state->status = Status_Awaiting_Data_Ack;
                 SWITCH_PORTS_IF_DONE();
             }
 
@@ -275,26 +249,94 @@ static void process_receive_complete(PortState * port_state) {
     Request * req = &port_state->current_request;
     Response * resp = &port_state->current_response;
 
-    if (port_state->status == Status_Idle || port_state->status == Status_Done) {
-        // Normally we'd expect to be in receiving state and fail otherwise,
-        // but the timing on that is a bit, well, asynchronous.
-        // Being a bit lenient here and just checking that something is at least
-        // meant to be happening here.
+    // TODO integrate checking acknowledge message here
 
-        // FIXME/TODO: ensure correct "receiving" status when expected        
+    switch (port_state->status) {
+        case Status_Idle:
+            // Should not finish receiving when in idle mode.
+            Error_Handler(252);
+            break;
 
-        Error_Handler(252);
-        return; // Although we'd never hit this point.
+        case Status_Sending_Command:
+            // Should be impossible.
+            Error_Handler(252);
+            break;
+
+        case Status_Awaiting_Command_Ack:
+            if (acknowledged != MSG_ACKNOWLEGE) {
+                // TODO: whatever should be done here?
+                // We got something that isn't an ACK message, unexpected.
+                break;
+            }
+
+            acknowledged = 0x00;
+
+            // No more data to send? Then we're done.
+            // We wouldn't be in awaiting ack state if we expected
+            // a data response back without sending data out first.
+            if (req->send_data_len == 0) {
+                port_state->status = Status_Done;
+                break;
+            }
+
+            port_state->status = Status_Sending_Data;
+
+            // If we also expect a response, set that up first now
+            if (req->response_len > 0) {
+                uart_receive(
+                    port_state->comport_id,
+                    req->response_data,
+                    req->response_len
+                );
+            } else {
+                expect_acknowledge(port_state->comport_id);
+            }
+
+            // Send our data payload
+            uart_send(
+                port_state->comport_id,
+                req->send_data,
+                req->send_data_len
+            );
+            
+            break;
+
+        case Status_Sending_Data:
+            // Should be impossible.
+            Error_Handler(252);
+            break;
+
+
+        case Status_Awaiting_Data_Ack:
+            // If we get in this state at all, we're not expecting a data
+            // response, so we can mark it done
+            if (acknowledged == MSG_ACKNOWLEGE) {
+                acknowledged = 0x00;
+                port_state->status = Status_Done;
+                break;
+            } else {
+                // Uh, not too sure? Maybe wait for another byte?
+                // Mark it done anyway?
+            }
+
+            break;
+
+        case Status_Receiving:
+            resp->comport_id = req->comport_id;
+            resp->data = req->response_data;
+            resp->data_length = port_state->current_request.response_len;
+            resp->request_command = req->request_command;
+
+            queue_add(resp);
+            port_state->status = Status_Done;
+            break;
+
+        case Status_Done:
+            // Shouldn't be receiving anything when we're done.
+            Error_Handler(252);
+            break;
+
     }
-
-    port_state->status = Status_Done;
-
-    resp->comport_id = port_state->comport_id;
-    resp->data = req->response_data;
-    resp->data_length = port_state->current_request.response_len;
-    resp->request_command = req->request_command;
-
-    queue_add(resp);
 
     SWITCH_PORTS_IF_DONE();
 }
@@ -319,19 +361,16 @@ static void switch_ports() {
     unselected_ports.first->status = Status_Idle;
     unselected_ports.second->status = Status_Idle;
 
-    uint8_t any_reqs = false;
     // If newly-selected ports had queued requests, start them off now
     if (selected_ports.first->req_queue.count > 0) {
         Request req = req_queue_take(&selected_ports.first->req_queue);
         selected_ports.first->current_request = req;
-        any_reqs = true;
         start_request(&selected_ports.first->current_request);
     } 
 
     if (selected_ports.second->req_queue.count > 0) {
         Request req = req_queue_take(&selected_ports.second->req_queue);
         selected_ports.second->current_request = req;
-        any_reqs = true;
         start_request(&selected_ports.second->current_request);
     }
 }
@@ -350,6 +389,13 @@ static void start_request(Request * request) {
             request->response_data,
             request->response_len
         );
+    } else {
+        // Expect the command to be acknowledged if we:
+        //   either have more data to send, or don't have more data to send but
+        //   also don't expect a data response
+        // in essence, acknowledge is only redundant if we already expect the
+        // panel to send something back right after getting the command.
+        expect_acknowledge(request->comport_id);
     }
 
     uart_send(
@@ -368,6 +414,10 @@ static PortState * get_port_state(ComportId comport_id) {
         case Comport_Right: return &port_state_right;
         default: return NULL;
     }
+}
+
+static void expect_acknowledge(ComportId comport_id) {
+    uart_receive(comport_id, &acknowledged, 1);
 }
 
 static void queue_add(Response * resp) {

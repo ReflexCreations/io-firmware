@@ -149,20 +149,20 @@ int main(void){
     DBG_LED3_OFF();
   }
 
-  uint8_t max_br = 0x31;
-  uint16_t frame_ms = 10;
+  uint8_t max_br = 0x08;
+  uint16_t frame_ms = 50;
   while (1) {
-    for (uint8_t i = 0; i <= max_br; i++) {
+    for (uint8_t i = 0; i < max_br; i++) { // R: 255->0, G: 0->255, B: 0
       HAL_Delay(frame_ms);
       ledtests_solid_color_LEDs(Comport_Right, max_br - i, i, 0x00);
       msgbus_wait_for_idle(Comport_Right);
     }
-    for (uint8_t i = 0; i <= max_br; i++) {
+    for (uint8_t i = 0; i < max_br; i++) { // R: 0, G: 255->0, B 0->255
       HAL_Delay(frame_ms);
       ledtests_solid_color_LEDs(Comport_Right, 0, max_br - i, i);
       msgbus_wait_for_idle(Comport_Right);
     }
-    for (uint8_t i = 0; i <= max_br; i++) {
+    for (uint8_t i = 0; i < max_br; i++) { // R 0->255, G: 0, B: 255->0
       HAL_Delay(frame_ms);
       ledtests_solid_color_LEDs(Comport_Right, i, 0, max_br - i);
       msgbus_wait_for_idle(Comport_Right);

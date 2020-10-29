@@ -268,13 +268,13 @@ static void init_periph(
     UART_HandleTypeDef *huart, USART_TypeDef *usart, IRQn_Type irqn) {
 
     huart->Instance = usart;
-    huart->Init.BaudRate = 1984000; //1920//512000;
+    huart->Init.BaudRate = 4500000;
     huart->Init.WordLength = UART_WORDLENGTH_8B;
     huart->Init.StopBits = UART_STOPBITS_2;
     huart->Init.Parity = UART_PARITY_NONE;
     huart->Init.Mode = UART_MODE_TX_RX;
     huart->Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart->Init.OverSampling = UART_OVERSAMPLING_16;
+    huart->Init.OverSampling = UART_OVERSAMPLING_8;
     huart->Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE; // DIS
     huart->AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
 

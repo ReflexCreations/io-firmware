@@ -12,7 +12,9 @@ typedef enum {
   Command_Test_Double_Values = 0x73,
 
   Command_Test_Hardcoded_LEDs = 0x81,
-  Command_Test_Solid_Color_LEDs = 0x82
+  Command_Test_Solid_Color_LEDs = 0x82,
+  Command_Test_Segment_Solid_Color_LEDs = 0x83,
+  Command_Test_Commit_LEDs = 0x84
 } Commands;
 
 #endif

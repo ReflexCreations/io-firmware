@@ -1,6 +1,7 @@
 #include "uart.h"
 #include "bool.h"
 #include "error_handler.h"
+#include "config.h"
 
 #define RS485_CK_DR_PINS_B GPIO_PIN_2|GPIO_PIN_7|GPIO_PIN_9|GPIO_PIN_13
 #define RS485_TX_DR_PINS_B GPIO_PIN_0|GPIO_PIN_14|GPIO_PIN_6
@@ -18,18 +19,10 @@
 #define UART2_RIGHT_PINS_A GPIO_PIN_15
 #define UART2_RIGHT_PINS_B GPIO_PIN_3
 
-// Change these if depending on what you've got plugged in
-// Only to be used for the ALL_INITIALIZED check, not conditional
-// init or anything, just to keep things simple
-#define PANEL_LEFT_CONNECTED  (0) 
-#define PANEL_UP_CONNECTED    (1) 
-#define PANEL_DOWN_CONNECTED  (0)
-#define PANEL_RIGHT_CONNECTED (1)
-
 #define PANEL_LEFT_INITIALIZED (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8))
-#define PANEL_UP_INITIALIZED HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4)
-#define PANEL_DOWN_INITIALIZED HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12)
-#define PANEL_RIGHT_INITIALIZED HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5)
+#define PANEL_UP_INITIALIZED (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_4))
+#define PANEL_DOWN_INITIALIZED (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12))
+#define PANEL_RIGHT_INITIALIZED (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5))
 
 #define ALL_INITIALIZED (\
     (!PANEL_LEFT_CONNECTED || PANEL_LEFT_INITIALIZED) && \
@@ -115,6 +108,10 @@ void uart_receive(
     if (HAL_UART_Receive_DMA(huart, data_ptr, data_len) != HAL_OK) {
         Error_Handler(500);
     }
+}
+
+void uart_abort_receive(ComportId comport_id) {
+    HAL_UART_AbortReceive(get_uart_handle(comport_id));
 }
 
 void uart_set_on_send_complete_handler(SendCompleteHandler handler) {
@@ -268,7 +265,7 @@ static void init_periph(
     UART_HandleTypeDef *huart, USART_TypeDef *usart, IRQn_Type irqn) {
 
     huart->Instance = usart;
-    huart->Init.BaudRate = 4500000;
+    huart->Init.BaudRate = 3000000;
     huart->Init.WordLength = UART_WORDLENGTH_8B;
     huart->Init.StopBits = UART_STOPBITS_2;
     huart->Init.Parity = UART_PARITY_NONE;

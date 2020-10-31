@@ -36,6 +36,8 @@ void uart_send(
 void uart_receive(
     ComportId comport_id, uint8_t * data_ptr, uint16_t data_len);
 
+void uart_abort_receive(ComportId comport_id);
+
 // Configures a callback function to be called when a transmission completes
 // The handler function will be passed the ComportId of the port that finished
 // transmitting

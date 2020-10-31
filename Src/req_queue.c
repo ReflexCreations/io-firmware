@@ -16,9 +16,7 @@ static inline uint8_t contains(RequestQueue * queue, Request req) {
     if (queue->count == 0) return false;
 
     for (uint8_t i = 0; i < MAX_REQ_QUEUE_LENGTH; i++) {
-        if (queue->items[i].comport_id == req.comport_id 
-            && queue->items[i].request_command == req.request_command
-            && queue->items[i].send_data == req.send_data) return true;
+        if (request_equals(queue->items[i], req)) return true;
     }
 
     return false;
@@ -41,7 +39,7 @@ void req_queue_add(RequestQueue * queue, Request request) {
     }
 
     if (contains(queue, request)) {
-        Error_Handler(400);
+        //Error_Handler(400);
         return;
     }
 

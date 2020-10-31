@@ -4,6 +4,7 @@
 #include "stm32f3xx.h"
 #include "uart.h"
 #include "commands.h"
+#include "bool.h"
 
 typedef struct {
     // Which port this request is being made over
@@ -26,5 +27,26 @@ typedef struct {
     // Set to 0 to not expect any response after sending request_command + send_data
     uint16_t response_len;
 } Request;
+
+inline Request request_create(Commands command) {
+    Request req;
+    req.comport_id = Comport_None;
+    req.request_command = command;
+    req.send_data = NULL;
+    req.send_data_len = 0;
+    req.response_data = NULL;
+    req.response_len = 0;
+
+    return req;
+}
+
+inline bool request_equals(Request req_a, Request req_b) {
+    return req_a.comport_id == req_b.comport_id \
+        && req_a.request_command == req_b.request_command \
+        && req_a.send_data == req_b.send_data \
+        && req_a.send_data_len == req_b.send_data_len \
+        && req_a.response_data == req_b.response_data \
+        && req_a.response_len == req_b.response_len;
+}
 
 #endif

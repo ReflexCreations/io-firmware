@@ -36,18 +36,21 @@ BUILD_DIR = build
 ######################################
 # C sources
 C_SOURCES =  \
+Src/color.c \
+Src/commtests.c \
+Src/config.c \
+Src/ledtests.c \
 Src/main.c \
 Src/msgbus.c \
 Src/req_queue.c \
+Src/stm32f3xx_hal_msp.c \
+Src/stm32f3xx_it.c \
+Src/system_stm32f3xx.c \
 Src/uart.c \
 Src/usb_device.c \
 Src/usbd_conf.c \
-Src/usbd_desc.c \
 Src/usbd_custom_hid_if.c \
-Src/stm32f3xx_it.c \
-Src/stm32f3xx_hal_msp.c \
-Src/commtests.c \
-Src/ledtests.c \
+Src/usbd_desc.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_tim.c \
@@ -66,7 +69,6 @@ Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c_ex.c \
-Src/system_stm32f3xx.c \
 Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c \
 Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c \
 Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c \
@@ -139,9 +141,11 @@ C_INCLUDES =  \
 
 
 # compile gcc flags
-ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+# Note: Added -Wno-switch here because we have several enum switches where
+# it makes no sense to include all options
+ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -Wno-switch -fdata-sections -ffunction-sections
 
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -Wno-switch -fdata-sections -ffunction-sections
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2

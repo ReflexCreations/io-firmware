@@ -1,6 +1,7 @@
 #include "main.h"
 #include "usb_device.h"
 #include "usbd_customhid.h"
+#include "usbd_custom_hid_if.h"
 #include "bool.h"
 #include "uart.h"
 #include "commands.h"
@@ -9,6 +10,7 @@
 #include "error_handler.h"
 #include "commtests.h"
 #include "ledtests.h"
+#include "color.h"
 
 #define USB_HID_PACKET_SIZE_BYTES (64U)
 #define BYTES_PER_SEGMENT (64U)
@@ -17,327 +19,313 @@
 #define PANELS_PER_PLATFORM (4U)
 #define LED_ARRAY_SIZE (BYTES_PER_PANEL * PANELS_PER_PLATFORM)
 
+#define SENSOR_RESPONSE_LEN (8U)
+
 #define COMPLETE_FRAME (0xFFFF)
-
-#define BUILD_SENSOR_REQ(req, comport) do { \
-  req.comport_id = comport; \
-  req.request_command = Command_Request_Sensors; \
-  req.send_data = NULL; \
-  req.send_data_len = 0; \
-  req.response_data = sensor_buffer + ((uint8_t)comport * 8); \
-  req.response_len = 8; \
-} while (0U);
-  
-
-#define BUILD_TRANSMIT_LEDS_REQ(req, comport, segment) do {\
-  req.comport_id = comport; \
-  req.request_command = Command_Process_LED_Segment; \
-  req.send_data = led_buffer + \
-    (comport * BYTES_PER_PANEL) + (segment * BYTES_PER_SEGMENT); \
-  req.send_data_len = BYTES_PER_SEGMENT; \
-  req.response_data = NULL; \
-  req.response_len = 0; \
-} while (0U);
-
-#define BUILD_COMMIT_LEDS_REQ(req, comport) do { \
-  req.comport_id = comport; \
-  req.request_command = Command_Commit_LEDs; \
-  req.send_data = NULL; \
-  req.send_data_len = 0; \
-  req.response_data = NULL; \
-  req.response_len = 0; \
-} while (0U);
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
-UART_HandleTypeDef huart1_l; // Left
-UART_HandleTypeDef huart2_u_r; // Up, Right
-UART_HandleTypeDef huart3_d; // Down
-DMA_HandleTypeDef hdma_usart1_l_rx; // Left
-DMA_HandleTypeDef hdma_usart1_l_tx;
-DMA_HandleTypeDef hdma_usart2_u_r_rx; // Up, right
-DMA_HandleTypeDef hdma_usart2_u_r_tx;
-DMA_HandleTypeDef hdma_usart3_d_rx; // Down
-DMA_HandleTypeDef hdma_usart3_d_tx;
-
 uint8_t sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
 uint8_t usb_sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
-uint8_t led_buffer[LED_ARRAY_SIZE];
 
-uint8_t test_buffer_2b[2];
-uint8_t test_buffer_64b[64];
+volatile uint8_t last_usb_header;
+volatile uint32_t packets_fetched = 0;
 
-uint16_t segments_received = 0x0000;
+static void init_system_clock(void);
+static void init_gpio(void);
 
-uint8_t last_packet_header = 0x00;
+static void init();
+static void run();
+static void test();
 
-extern uint8_t rep_buf[USB_HID_PACKET_SIZE_BYTES];
+static inline void send_request_sensors() {
+    Request req = request_create(Command_Request_Sensors);
+    req.response_len = SENSOR_RESPONSE_LEN;
 
-extern bool packet_received;
+    req.comport_id = Comport_Left;
+    req.response_data = sensor_buffer + \
+        ((uint8_t)Comport_Left) * SENSOR_RESPONSE_LEN;
+    msgbus_send_request(req);
 
+    req.comport_id = Comport_Down;
+    req.response_data = sensor_buffer + \
+        ((uint8_t)Comport_Down) * SENSOR_RESPONSE_LEN;
+    msgbus_send_request(req);
 
-void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
+    req.comport_id = Comport_Up;
+    req.response_data = sensor_buffer + \
+        ((uint8_t)Comport_Up) * SENSOR_RESPONSE_LEN;
+    msgbus_send_request(req);
 
-// Seems that when sending LED packets, it sends broken data to 2 ports,
-// and tells them to commit. Usually comes up all white. Then everything breaks,
-// there's no more new sensor data received from panel boards. Seems same buffer
-// keeps getting sent.
+    req.comport_id = Comport_Right;
+    req.response_data = sensor_buffer + \
+        ((uint8_t)Comport_Right) * SENSOR_RESPONSE_LEN;
+    msgbus_send_request(req);
+}
 
-// Need to somehow debug this. Maybe parity check should be enable to check
-// data integrity now we're sending so much, so fast?
+static inline void send_sensor_update_usb() {
+    USBD_CUSTOM_HID_SendReport(
+        &hUsbDeviceFS,
+        usb_sensor_buffer,
+        USB_HID_PACKET_SIZE_BYTES
+    );
+}
+
+// Breaks when this is being done after a bunch of times
+static inline void process_sensor_data(Response * resp) {
+    uint8_t offset = (uint8_t)resp->comport_id * SENSOR_RESPONSE_LEN;
+
+    // Copy data over into usb sensor array
+    for (uint8_t i = 0; i < resp->data_length; i++) {
+        usb_sensor_buffer[offset + i] = resp->data[i];
+    }   
+}
+
+static inline void send_commit_LEDs() {
+    Request req = request_create(Command_Commit_LEDs);
+    req.comport_id = Comport_Left;
+    msgbus_send_request(req);
+    req.comport_id = Comport_Down;
+    msgbus_send_request(req);
+    req.comport_id = Comport_Up;
+    msgbus_send_request(req);
+    req.comport_id = Comport_Right;
+    msgbus_send_request(req);
+}
+
+static inline void send_process_led_segment(uint8_t panel, uint8_t * data_ptr) {
+    Request req = request_create(Command_Process_LED_Segment);
+    req.comport_id = (ComportId)panel;
+    req.send_data = data_ptr;
+    req.send_data_len = BYTES_PER_SEGMENT;
+    msgbus_send_request(req);
+}
+
+static inline void process_led_data() {
+    static uint16_t segments_received = 0x0000;
+    static uint8_t led_buffer[LED_ARRAY_SIZE];
+    static uint8_t previous_frame = 0xFF;
+
+    if (segments_received == COMPLETE_FRAME) {
+        DBG_LED3_ON();
+        segments_received = 0x0000;
+        send_commit_LEDs();
+    }
+
+    uint8_t * packet = usb_get_packet();
+
+    if (packet == NULL) {
+        return;
+    }
+
+    uint8_t header = packet[0];
+    last_usb_header = header;
+    uint8_t panel = (header >> 6) & 0x03;
+    uint8_t segment = (header >> 4) & 0x03;
+    uint8_t frame = header & 0x0F;
+
+    uint16_t buffer_offset = 
+        panel * BYTES_PER_PANEL + segment * BYTES_PER_SEGMENT;
+
+    for (uint8_t i = 0; i < USB_HID_PACKET_SIZE_BYTES; i++) {
+        led_buffer[i + buffer_offset] = packet[i];
+    }
+
+    if (frame != previous_frame) {
+        segments_received = 0x0000;
+    }
+
+    previous_frame = frame;
+    segments_received |= (1 << (panel * PANELS_PER_PLATFORM + segment));
+    send_process_led_segment(panel, led_buffer + buffer_offset);
+}
 
 
 int main(void){
-  HAL_Init();
-  MX_GPIO_Init();
-  SystemClock_Config();
-  uart_init();
-  msgbus_init();
-  
-  MX_USB_DEVICE_Init();
+    init();
+    //test();
+    run();
+}
 
-  uint8_t packet_header = 0x00;
-  uint8_t previous_frame = 0x00;
+static void init() {
+    HAL_Init();
+    init_gpio();
+    init_system_clock();
+    uart_init();
+    msgbus_init();
+    
+    MX_USB_DEVICE_Init();
+    DBG_LED1_ON();
+}
 
-  USBD_CUSTOM_HID_HandleTypeDef *hhid = \
-      (USBD_CUSTOM_HID_HandleTypeDef*)hUsbDeviceFS.pClassData;
+static void run() {
+    send_request_sensors();
 
-  DBG_LED1_ON();
-
-  Request left_sensor_req;
-  Request down_sensor_req;
-  Request up_sensor_req;
-  Request right_sensor_req;
-
-  Request transmit_leds_req;
-
-  // This builds requests that instruct to store sensor data in sensor_buffer
-  // in relevant locations
-  BUILD_SENSOR_REQ(left_sensor_req, Comport_Left);
-  BUILD_SENSOR_REQ(down_sensor_req, Comport_Down);
-  BUILD_SENSOR_REQ(up_sensor_req, Comport_Up);
-  BUILD_SENSOR_REQ(right_sensor_req, Comport_Right);
-
-  //msgbus_send_request(left_sensor_req);
-  //msgbus_send_request(down_sensor_req);
-  //msgbus_send_request(up_sensor_req);
-  //msgbus_send_request(right_sensor_req);
-
-  ComportId port_1 = Comport_Down;
-  ComportId port_2 = Comport_Right;
-
-  if (commtest_dual_receive_2bytes(port_1, port_2)
-      && commtest_dual_receive_64bytes(port_1, port_2)
-      && commtest_dual_double_values(port_1, port_2)) {
-    DBG_LED3_ON();
-  } else {
-    DBG_LED3_OFF();
-  }
-
-  ledtests_hardcoded_LEDs(Comport_Right);
-  msgbus_wait_for_idle(Comport_Right);
-
-  DBG_LED3_OFF();
-
-  //HAL_Delay(1000);
-
-
-  if (commtest_receive_2bytes(Comport_Right)) {
-    DBG_LED3_ON();
-  } else {
-    DBG_LED3_OFF();
-  }
-
-  uint8_t max_br = 0x08;
-  uint16_t frame_ms = 50;
-  while (1) {
-    for (uint8_t i = 0; i < max_br; i++) { // R: 255->0, G: 0->255, B: 0
-      HAL_Delay(frame_ms);
-      ledtests_solid_color_LEDs(Comport_Right, max_br - i, i, 0x00);
-      msgbus_wait_for_idle(Comport_Right);
-    }
-    for (uint8_t i = 0; i < max_br; i++) { // R: 0, G: 255->0, B 0->255
-      HAL_Delay(frame_ms);
-      ledtests_solid_color_LEDs(Comport_Right, 0, max_br - i, i);
-      msgbus_wait_for_idle(Comport_Right);
-    }
-    for (uint8_t i = 0; i < max_br; i++) { // R 0->255, G: 0, B: 255->0
-      HAL_Delay(frame_ms);
-      ledtests_solid_color_LEDs(Comport_Right, i, 0, max_br - i);
-      msgbus_wait_for_idle(Comport_Right);
-    }
-  }
-
-  // TODO: a test for sending a full buffer of LED data from IO board
-
-  while(1) {
-    msgbus_process_flags();
-  }
-
-  while (1) {
-    msgbus_process_flags();
-
-    if (msgbus_have_pending_response()) {
-      DBG_LED1_TOGGLE();
-      Response * resp = msgbus_get_pending_response();
-
-      if (resp->request_command == Command_Request_Sensors) {
-        //DBG_LED2_TOGGLE();
-        uint8_t offset = ((uint8_t)resp->comport_id) * 8;
-        for (uint8_t i = 0; i < 8; i++) {
-          usb_sensor_buffer[offset + i] = sensor_buffer[offset + i];
+    while (1) {
+        msgbus_process_flags();
+      
+        if (msgbus_have_pending_response()) {
+            Response * resp = msgbus_get_pending_response();
+          
+            switch (resp->request_command) {
+                case Command_Request_Sensors:
+                    process_sensor_data(resp);
+                    break;
+            }
         }
-      }
 
-      if (resp->request_command == Command_Test_Expect_2B) {
-        if (test_buffer_2b[0] == 0xBE && test_buffer_2b[1] == 0xEF) {
-          DBG_LED3_ON();
-        }
-      }
-
-      // TODO: deal with responses to other sorts of commands here
-
+        send_sensor_update_usb();
+        process_led_data();
+        send_request_sensors();
     }
-  }
+}
 
-  while(0) {
+static void test() {
+    // usb comms test
+    while (1) {
+        send_sensor_update_usb();
+        for (uint8_t i = 0; i < 32; i++) {
+            usb_sensor_buffer[i] = i;
+        }
 
-    // -------------------------------------
-    // TODO current issue to investigate
-    //
-    // it seems Command_Commit_LEDs is never being sent, at least not received
-    // on the panel side according to debug LEDS.
-    // Find out if on here we think we're sending it with debug LED
-    // If not, well, figure out why not.
-    // Also it's running at <1000Hz, so any optimizations, go.
-    // Also fucking go to bed on time jesus christ it's 1:15 am on a monday
-    //
+        uint8_t * packet = usb_get_packet();
 
-    USBD_CUSTOM_HID_SendReport(
-      &hUsbDeviceFS, usb_sensor_buffer, USB_HID_PACKET_SIZE_BYTES
+        if (packet == NULL) {
+            DBG_LED3_OFF();
+            continue;
+        }
+
+        uint8_t all_good = true;
+        for (uint8_t i = 0; i < 64; i++) {
+            if (packet[i] != i) {
+                all_good = false;
+                break;
+            }
+        }
+
+        if (all_good) {
+            DBG_LED3_ON();
+        }
+    }
+
+    while(1);
+
+    ComportId port_1 = Comport_Down;
+    ComportId port_2 = Comport_Right;
+
+    // Communcation tests for 2 ports
+    if (commtest_dual_receive_2bytes(port_1, port_2)
+        && commtest_dual_receive_64bytes(port_1, port_2)
+        && commtest_dual_double_values(port_1, port_2)) {
+        // If they all passed, turn LED 3 on
+        DBG_LED3_ON();
+    } else {
+        DBG_LED3_OFF();
+    }
+
+    // test LEDs on panel, hardcoded pattern
+    ledtests_hardcoded_LEDs(Comport_Right);
+    msgbus_wait_for_idle(Comport_Right);
+
+    // Turn this LED off again to show that we got to this point
+    DBG_LED3_OFF();
+
+    HAL_Delay(1000);
+
+    // Ensure comms still work after having dealt with LEDs
+    if (commtest_receive_2bytes(Comport_Right)) {
+        DBG_LED3_ON();
+    } else {
+        DBG_LED3_OFF();
+    }
+
+    ledtests_loop_color_wheel(Comport_Right);
+}
+
+static void init_system_clock() {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK){
+        Error_Handler(1000);
+    }
+
+    RCC_ClkInitStruct.ClockType = \
+        RCC_CLOCKTYPE_HCLK \
+        | RCC_CLOCKTYPE_SYSCLK \
+        | RCC_CLOCKTYPE_PCLK1 \
+        | RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
+        Error_Handler(1000);
+    }
+
+    PeriphClkInit.PeriphClockSelection = \
+        RCC_PERIPHCLK_USB \
+        | RCC_PERIPHCLK_USART1 \
+        | RCC_PERIPHCLK_USART2 \
+        | RCC_PERIPHCLK_USART3;
+    PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
+    PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
+    PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
+    PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
+
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK){
+        Error_Handler(1000);
+    }
+}
+
+static void init_gpio() {
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+
+    // -- Write relevant GPIO pins LOW
+
+    // A 0,1,6,7: Debug pins
+    HAL_GPIO_WritePin(
+        GPIOA, 
+        GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_6 | GPIO_PIN_7,
+        GPIO_PIN_RESET
     );
 
-    if (segments_received == COMPLETE_FRAME) {
-      Request commit_req;
-      BUILD_COMMIT_LEDS_REQ(commit_req, Comport_Left);
+    // C 13,14,15: Status LEDs
+    HAL_GPIO_WritePin(
+        GPIOC,
+        GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15,
+        GPIO_PIN_RESET
+    );
 
-      msgbus_send_request(commit_req);
-      commit_req.comport_id = Comport_Down;
-      msgbus_send_request(commit_req);
-      commit_req.comport_id = Comport_Up;
-      msgbus_send_request(commit_req);
-      //commit_req.comport_id = COMPORT_RIGHT;
-      //msgbus_send_request(commit_req);
-      //DBG_LED3_ON();
+    // -- configure pin modes
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-      segments_received = 0x0000;
-    }
+    // A 0,1,6,7: Debug Pins (outputs)
+    GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_6 | GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-    if (packet_received) {
-      //DBG_LED3_TOGGLE();
-      packet_header = rep_buf[0];
-      last_packet_header = packet_header;
-      // Not sure the enum type serves any purpose here actually
-      uint8_t panel = (packet_header >> 6) & 0x03;
-      uint8_t segment = (packet_header >> 4) & 0x03;
-      uint8_t frame = packet_header & 0x0F;
-
-      uint16_t buffer_offset = 
-          panel * BYTES_PER_PANEL + segment * BYTES_PER_SEGMENT;
-
-      for (uint8_t i = 0; i < USB_HID_PACKET_SIZE_BYTES; i++) {
-        led_buffer[i + buffer_offset] = rep_buf[i];
-      }
-
-      if (frame != previous_frame) {
-        //segments_received = 0x0000;
-      }
-
-      previous_frame = frame;
-      segments_received |= (1 << (panel * PANELS_PER_PLATFORM + segment));
-
-      BUILD_TRANSMIT_LEDS_REQ(transmit_leds_req, (ComportId)panel, segment);
-      msgbus_send_request(transmit_leds_req);
-      packet_received = false;
-    }
-
-    msgbus_send_request(left_sensor_req);
-    msgbus_send_request(down_sensor_req);
-    msgbus_send_request(up_sensor_req);
-    //msgbus_send_request(right_sensor_req);
-  }
-}
-
-void SystemClock_Config(void){
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
-
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK){
-    Error_Handler(1000);
-  }
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
-
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK){
-    Error_Handler(1000);
-  }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
-                              |RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_USART3;
-  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
-  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
-  PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK){
-    Error_Handler(1000);
-  }
-}
-
-static void MX_GPIO_Init(void){
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-
-  // -- Write relevant GPIO pins LOW
-
-  // A 0,1,6,7: Debug pins
-  HAL_GPIO_WritePin(GPIOA, 
-      GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_6 | GPIO_PIN_7,
-      GPIO_PIN_RESET);
-
-  // C 13,14,15: Status LEDs
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
-
-  // -- configure pin modes
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-  // A 0,1,6,7: Debug Pins (outputs)
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_6|GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  // C 13,14,15: Status LEDS (outputs)
-  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    // C 13,14,15: Status LEDS (outputs)
+    GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 }
 
 #ifdef  USE_FULL_ASSERT
-void assert_failed(char *file, uint32_t line){ 
-}
+void assert_failed(char *file, uint32_t line){ }
 #endif

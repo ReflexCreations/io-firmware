@@ -3,17 +3,20 @@
 #include "request.h"
 #include "req_queue.h"
 #include "error_handler.h"
+#include "config.h"
 
 #define RESPONSE_QUEUE_MAX 4
+#define RESPONSE_TIMEOUT_TICKS (2U)
 
-#define INIT_PORT_STATE(state, port_id, is_selected) \
+#define INIT_PORT_STATE(state, port_id, is_selected) do { \
     state.comport_id = port_id; \
     state.status = Status_Idle; \
     state.selected = is_selected; \
     state.current_request = Request_Default; \
     state.current_response = Response_Default; \
     state.interrupt_flags = 0x00; \
-    req_queue_init(&state.req_queue);
+    req_queue_init(&state.req_queue); \
+} while(0U);
 
 
 #define SWITCH_PORTS_IF_DONE() \
@@ -72,7 +75,13 @@ static int8_t queue_front = 0;
 static int8_t queue_rear = -1;
 static uint8_t queue_count = 0;
 
-static uint8_t acknowledged = 0x00;
+// TODO: make part of PortState struct
+uint8_t acknowledged[4] = {
+    0x00, // Comport_Left
+    0x00, // Comport_Down
+    0x00, // Comport_Up
+    0x00  // Comport_Right
+};
 
 // Non-0 if there's any interrupt flags
 static uint8_t any_interrupt_flags;
@@ -98,6 +107,7 @@ static void start_request(Request *);
 static PortState * get_port_state(ComportId);
 
 static void expect_acknowledge(ComportId);
+static void check_timeout(PortState *);
 
 // Should be given to uart as function pointers
 static void uart_on_send_complete(ComportId);
@@ -129,6 +139,11 @@ void msgbus_init() {
 
 void msgbus_process_flags() {
     if (!ANY_INTERRUPT_FLAGS) {
+        // TODO: check if waiting
+        check_timeout(&port_state_left);
+        check_timeout(&port_state_down);
+        check_timeout(&port_state_up);
+        check_timeout(&port_state_right);
         SWITCH_PORTS_IF_DONE();
         return;
     }
@@ -141,6 +156,8 @@ void msgbus_process_flags() {
 }
 
 void msgbus_send_request(Request request) {
+    if (!panel_connected(request.comport_id)) return;
+
     PortState * portState = get_port_state(request.comport_id);
 
     // If no valid port was specified, there's nothing we can do.
@@ -149,10 +166,16 @@ void msgbus_send_request(Request request) {
         Error_Handler(250);
     }
 
+
     // Not Idle? Stick it on the queue
     // Also if port is not selected we'll queue it for later
     if (portState->status != Status_Idle || !portState->selected) {
-        req_queue_add(&portState->req_queue, request);
+        // Only queue a request if it's not one that's currently being
+        // executed
+        if (!request_equals(portState->current_request, request)) {
+            req_queue_add(&portState->req_queue, request);
+        }
+
         return;
     }
 
@@ -220,6 +243,8 @@ static void process_send_complete(PortState * port_state) {
                 port_state->status = Status_Awaiting_Command_Ack;
             }
 
+            port_state->waiting_since = HAL_GetTick();
+
             break;
 
         case Status_Sending_Data:
@@ -227,11 +252,11 @@ static void process_send_complete(PortState * port_state) {
             // a response right now.
             if (req->response_len > 0) {
                 port_state->status = Status_Receiving;
-                return;
             } else {
                 port_state->status = Status_Awaiting_Data_Ack;
-                SWITCH_PORTS_IF_DONE();
             }
+
+            port_state->waiting_since = HAL_GetTick();
 
             break;
 
@@ -249,27 +274,26 @@ static void process_receive_complete(PortState * port_state) {
     Request * req = &port_state->current_request;
     Response * resp = &port_state->current_response;
 
-    // TODO integrate checking acknowledge message here
-
     switch (port_state->status) {
         case Status_Idle:
             // Should not finish receiving when in idle mode.
-            Error_Handler(252);
+            Error_Handler(255);
             break;
 
         case Status_Sending_Command:
             // Should be impossible.
-            Error_Handler(252);
+            Error_Handler(254);
             break;
 
         case Status_Awaiting_Command_Ack:
-            if (acknowledged != MSG_ACKNOWLEGE) {
+            if (acknowledged[port_state->comport_id] != MSG_ACKNOWLEGE) {
+                Error_Handler(404);
                 // TODO: whatever should be done here?
                 // We got something that isn't an ACK message, unexpected.
                 break;
             }
 
-            acknowledged = 0x00;
+            acknowledged[port_state->comport_id] = 0x00;
 
             // No more data to send? Then we're done.
             // We wouldn't be in awaiting ack state if we expected
@@ -310,11 +334,12 @@ static void process_receive_complete(PortState * port_state) {
         case Status_Awaiting_Data_Ack:
             // If we get in this state at all, we're not expecting a data
             // response, so we can mark it done
-            if (acknowledged == MSG_ACKNOWLEGE) {
-                acknowledged = 0x00;
+            if (acknowledged[port_state->comport_id] == MSG_ACKNOWLEGE) {
+                acknowledged[port_state->comport_id] = 0x00;
                 port_state->status = Status_Done;
                 break;
             } else {
+                Error_Handler(403);
                 // Uh, not too sure? Maybe wait for another byte?
                 // Mark it done anyway?
             }
@@ -324,7 +349,7 @@ static void process_receive_complete(PortState * port_state) {
         case Status_Receiving:
             resp->comport_id = req->comport_id;
             resp->data = req->response_data;
-            resp->data_length = port_state->current_request.response_len;
+            resp->data_length = req->response_len;
             resp->request_command = req->request_command;
 
             queue_add(resp);
@@ -333,12 +358,26 @@ static void process_receive_complete(PortState * port_state) {
 
         case Status_Done:
             // Shouldn't be receiving anything when we're done.
-            Error_Handler(252);
+            Error_Handler(253);
             break;
 
     }
+}
 
-    SWITCH_PORTS_IF_DONE();
+static void check_timeout(PortState * port_state) {
+    uint32_t ticks = HAL_GetTick();
+
+    switch (port_state->status) {
+        case Status_Awaiting_Command_Ack:
+        case Status_Awaiting_Data_Ack:
+        case Status_Receiving:
+            if (ticks - port_state->waiting_since > RESPONSE_TIMEOUT_TICKS) {
+                uart_abort_receive(port_state->comport_id);
+                port_state->status = Status_Done;
+            }
+
+            break;
+    }
 }
 
 
@@ -403,7 +442,6 @@ static void start_request(Request * request) {
         &request->request_command, // Address of command byte in memory
         1 // number of bytes to send
     );
-
 }
 
 static PortState * get_port_state(ComportId comport_id) {
@@ -417,7 +455,7 @@ static PortState * get_port_state(ComportId comport_id) {
 }
 
 static void expect_acknowledge(ComportId comport_id) {
-    uart_receive(comport_id, &acknowledged, 1);
+    uart_receive(comport_id, acknowledged + comport_id, 1);
 }
 
 static void queue_add(Response * resp) {

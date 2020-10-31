@@ -76,6 +76,8 @@ typedef struct {
     // current_request.response_len > 0
     Response current_response;
 
+    uint32_t waiting_since;
+
     // Interrupt flags to be processed
     uint8_t interrupt_flags;
 } PortState;

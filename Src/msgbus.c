@@ -370,8 +370,11 @@ static void check_timeout(PortState * port_state) {
         case Status_Awaiting_Command_Ack:
         case Status_Awaiting_Data_Ack:
         case Status_Receiving:
-            if (ticks - port_state->waiting_since > RESPONSE_TIMEOUT_TICKS) {
+            if (HAL_GetTick() - port_state->waiting_since \
+                > RESPONSE_TIMEOUT_TICKS) {
+
                 uart_abort_receive(port_state->comport_id);
+                port_state->timeout_count++;
                 port_state->status = Status_Done;
             }
 

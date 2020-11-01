@@ -40,13 +40,21 @@ inline Request request_create(Commands command) {
     return req;
 }
 
-inline bool request_equals(Request req_a, Request req_b) {
-    return req_a.comport_id == req_b.comport_id \
-        && req_a.request_command == req_b.request_command \
-        && req_a.send_data == req_b.send_data \
-        && req_a.send_data_len == req_b.send_data_len \
-        && req_a.response_data == req_b.response_data \
+inline uint8_t request_equals(Request req_a, Request req_b) {
+    return req_a.comport_id == req_b.comport_id 
+        && req_a.request_command == req_b.request_command
+        && req_a.send_data == req_b.send_data
+        && req_a.send_data_len == req_b.send_data_len
+        && req_a.response_data == req_b.response_data
         && req_a.response_len == req_b.response_len;
+}
+
+inline uint8_t request_has_data(Request * req) { 
+    return req->send_data_len > 0;
+}
+
+inline uint8_t request_expects_response(Request * req) {
+    return req->response_len > 0;
 }
 
 #endif

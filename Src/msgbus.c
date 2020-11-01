@@ -5,96 +5,25 @@
 #include "error_handler.h"
 #include "config.h"
 
-#define RESPONSE_QUEUE_MAX 4
+#define RESPONSE_QUEUE_MAX (4U)
 #define RESPONSE_TIMEOUT_TICKS (2U)
 
-#define INIT_PORT_STATE(state, port_id, is_selected) do { \
-    state.comport_id = port_id; \
-    state.status = Status_Idle; \
-    state.selected = is_selected; \
-    state.current_request = Request_Default; \
-    state.current_response = Response_Default; \
-    state.interrupt_flags = 0x00; \
-    req_queue_init(&state.req_queue); \
-} while(0U);
+#define SEND_COMPLETE_MASK (0x01U)
+#define RECEIVE_COMPLETE_MASK (0x02U)
 
-// TODO convert these to inline functions
-#define SWITCH_PORTS_IF_DONE() \
-    if ((selected_ports.first->status == Status_Done \
-            || selected_ports.first->status == Status_Idle) && \
-        (selected_ports.second->status == Status_Done \
-            || selected_ports.second->status == Status_Idle)) switch_ports()
-
-#define SET_SEND_COMPLETE(__PORTSTATE) \
-    __PORTSTATE->interrupt_flags |= (1 << 0); \
-    any_interrupt_flags = true;
-
-#define RESET_SEND_COMPLETE(__PORTSTATE) \
-    __PORTSTATE->interrupt_flags &= ~(1 << 0)
-
-#define SET_RECEIVE_COMPLETE(__PORTSTATE) \
-    __PORTSTATE->interrupt_flags |= (1 << 1); \
-    any_interrupt_flags = true;
-
-#define RESET_RECEIVE_COMPLETE(__PORTSTATE) \
-    __PORTSTATE->interrupt_flags &= ~(1 << 1)
-
-#define SEND_COMPLETE_IS_SET(__PORTSTATE) \
-    (__PORTSTATE.interrupt_flags & 0x01)
-
-#define RECEIVE_COMPLETE_IS_SET(__PORTSTATE) \
-    (__PORTSTATE.interrupt_flags & 0x02)
-
-// Note: it's important for the state machine that process_send_complete
-// is called before process_receive_complete.
-#define PROCESS_FLAGS(__PORTSTATE) \
-    if (SEND_COMPLETE_IS_SET(__PORTSTATE)) { \
-        process_send_complete(&__PORTSTATE); \
-    } \
-    \
-    if (RECEIVE_COMPLETE_IS_SET(__PORTSTATE)) { \
-        process_receive_complete(&__PORTSTATE); \
-    }
-
-#define ANY_INTERRUPT_FLAGS (\
-    port_state_left.interrupt_flags \
-        || port_state_down.interrupt_flags \
-        || port_state_up.interrupt_flags \
-        || port_state_right.interrupt_flags)
-
-static PortPair selected_ports;
-static PortPair unselected_ports;
-
+// Public, so that contents can be inspected during debugging
 PortState port_state_left;
 PortState port_state_down;
 PortState port_state_up;
 PortState port_state_right;
 
+static PortPair selected_ports;
+static PortPair unselected_ports;
+
 static Response * queue_responses[RESPONSE_QUEUE_MAX];
 static int8_t queue_front = 0;
 static int8_t queue_rear = -1;
 static uint8_t queue_count = 0;
-
-// Non-0 if there's any interrupt flags
-static uint8_t any_interrupt_flags;
-
-// TODO: inline function in request.h
-// Init value for this struct
-Request Request_Default = {
-    Comport_None, // comport_id
-    0x00, // request_command
-    NULL, // send_data
-    0, // send_data_len
-    0 // response_len
-};
-
-// TODO: inline function in response.h or wherever
-Response Response_Default = { 
-    Comport_None, // comport_id
-    0x00, // request_command;
-    NULL, // data
-    0, // data_length
-};
 
 static void switch_ports();
 static void start_request(Request *);
@@ -112,22 +41,118 @@ static void process_receive_complete(PortState *);
 static void queue_add(Response *);
 static Response * queue_take();
 
+
+static inline Response create_response(
+    ComportId port,
+    Commands request_command,
+    uint8_t * data,
+    uint16_t data_length
+) {
+    Response resp;
+    resp.comport_id = port;
+    resp.request_command = request_command;
+    resp.data = data;
+    resp.data_length = data_length;
+
+    return resp;
+}
+
+static inline Response create_blank_response(ComportId port) {
+    return create_response(port, Command_None, NULL, 0);
+}
+
+static inline void init_port_state(
+    PortState * state,
+    ComportId port,
+    uint8_t selected
+) {
+    state->comport_id = port;
+    state->status = Status_Idle;
+    state->selected = selected;
+    state->current_request = request_create(Command_None);
+    state->current_request.comport_id = port;
+    state->current_response = create_blank_response(port);
+    state->interrupt_flags = 0x00;
+    req_queue_init(&state->req_queue);
+}
+
+static inline void switch_ports_if_done() {
+    PortStatus status1 = selected_ports.first->status;
+    PortStatus status2 = selected_ports.second->status;
+
+    if ((status1 == Status_Idle || status1 == Status_Done) &&
+        (status2 == Status_Idle || status2 == Status_Done)) {
+
+        switch_ports();
+    }
+}
+
 static inline void expect_acknowledge(PortState * port_state) {
     uart_receive(port_state->comport_id, &port_state->acknowledged, 1);
 }
 
-static inline uint8_t was_acknowledged(PortState * port_state) {
-    uint8_t ack = (port_state->acknowledged == MSG_ACKNOWLEGE);
+static inline uint8_t check_acknowledge(PortState * port_state) {
+    uint8_t ack_was = port_state->acknowledged;
     port_state->acknowledged = 0x00;
-    return ack;
+    return ack_was == MSG_ACKNOWLEGE;
 }
 
+// Helpers for dealing with flags set by interrupts
+static inline uint8_t send_complete_is_set(PortState * port_state) {
+    return port_state->interrupt_flags & SEND_COMPLETE_MASK;
+}
+
+static inline uint8_t receive_complete_is_set(PortState * port_state) {
+    return port_state->interrupt_flags & RECEIVE_COMPLETE_MASK;
+}
+
+static inline void set_send_complete(PortState * port_state) {
+    port_state->interrupt_flags |= SEND_COMPLETE_MASK;
+}
+
+static inline void reset_send_complete(PortState * port_state) {
+    port_state->interrupt_flags &= ~SEND_COMPLETE_MASK;
+}
+
+static inline void set_receive_complete(PortState * port_state) {
+    port_state->interrupt_flags |= RECEIVE_COMPLETE_MASK;
+}
+
+static inline void reset_receive_complete(PortState * port_state) {
+    port_state->interrupt_flags &= ~RECEIVE_COMPLETE_MASK;
+}
+
+// Whether any of the ports have interrupt flags
+static inline uint8_t any_interrupt_flags() {
+    return port_state_left.interrupt_flags 
+            || port_state_down.interrupt_flags
+            || port_state_up.interrupt_flags
+            || port_state_right.interrupt_flags;
+}
+
+// Processes interrupt flags that were set since the last call,
+// set by a send and/or receive transaction completing
+static inline void process_flags(PortState * port_state) {
+    // Note: it's important that process_send_complete is called before
+    // process_receive_complete, for correct function of the state machine.
+    if (send_complete_is_set(port_state)) {
+        reset_send_complete(port_state);
+        process_send_complete(port_state);
+    }
+
+    if (receive_complete_is_set(port_state)) {
+        reset_receive_complete(port_state);
+        process_receive_complete(port_state);
+    }
+}
+
+// Public functions ------------------------------------------------------------
 
 void msgbus_init() {
-    INIT_PORT_STATE(port_state_left, Comport_Left, true);
-    INIT_PORT_STATE(port_state_up, Comport_Up, true);
-    INIT_PORT_STATE(port_state_right, Comport_Right, false);
-    INIT_PORT_STATE(port_state_down, Comport_Down, false);
+    init_port_state(&port_state_left, Comport_Left, true);
+    init_port_state(&port_state_up, Comport_Up, true);
+    init_port_state(&port_state_right, Comport_Right, false);
+    init_port_state(&port_state_down, Comport_Down, false);
 
     selected_ports.first = &port_state_left;
     selected_ports.second = &port_state_up;
@@ -136,25 +161,27 @@ void msgbus_init() {
 
     uart_connect_port(selected_ports.first->comport_id);
     uart_connect_port(selected_ports.second->comport_id);
+
     uart_set_on_send_complete_handler(uart_on_send_complete);
     uart_set_on_receive_complete_handler(uart_on_receive_complete);
 }
 
 void msgbus_process_flags() {
-    if (!ANY_INTERRUPT_FLAGS) {
+    if (!any_interrupt_flags()) {
         check_timeout(&port_state_left);
         check_timeout(&port_state_down);
         check_timeout(&port_state_up);
         check_timeout(&port_state_right);
-        SWITCH_PORTS_IF_DONE();
+        switch_ports_if_done();
         return;
     }
-    // I really ought to use inline functions instead of macros for this
-    PROCESS_FLAGS(port_state_left);
-    PROCESS_FLAGS(port_state_down);
-    PROCESS_FLAGS(port_state_up);
-    PROCESS_FLAGS(port_state_right);
-    SWITCH_PORTS_IF_DONE();
+
+    process_flags(&port_state_left);
+    process_flags(&port_state_down);
+    process_flags(&port_state_up);
+    process_flags(&port_state_right);
+
+    switch_ports_if_done();
 }
 
 void msgbus_send_request(Request request) {
@@ -167,7 +194,6 @@ void msgbus_send_request(Request request) {
     if (portState == NULL) {
         Error_Handler(250);
     }
-
 
     // Not Idle? Stick it on the queue
     // Also if port is not selected we'll queue it for later
@@ -196,11 +222,12 @@ Response * msgbus_get_pending_response() {
 }
 
 void msgbus_switch_ports_if_done() {
-    SWITCH_PORTS_IF_DONE();
+    switch_ports_if_done();
 }
 
 PortStatus msgbus_port_status(ComportId comport_id) {
     PortState * port_state = get_port_state(comport_id);
+
     if (port_state == NULL) {
         Error_Handler(255);
     }
@@ -221,25 +248,29 @@ void msgbus_wait_for_idle(ComportId comport_id) {
     }
 }
 
+// Private functions -----------------------------------------------------------
+
+// Callbacks for uart interrupts
 static void uart_on_send_complete(ComportId comport_id) {
     PortState * port_state = get_port_state(comport_id);
-    SET_SEND_COMPLETE(port_state);
+    set_send_complete(port_state);
 }
 
 static void uart_on_receive_complete(ComportId comport_id) {
     PortState * port_state = get_port_state(comport_id);
-    SET_RECEIVE_COMPLETE(port_state);
+    set_receive_complete(port_state);
 }
 
-static void process_send_complete(PortState * port_state) {
-    RESET_SEND_COMPLETE(port_state);
+// Process interrupt flags on main thread
 
+// Process a completed UART send
+static void process_send_complete(PortState * port_state) {
     Request * req = &port_state->current_request;
 
     switch (port_state->status) {
 
         case Status_Sending_Command:
-            if (req->send_data_len == 0 && req->response_len != 0) {
+            if (!request_has_data(req) && request_expects_response(req)) {
                 port_state->status = Status_Receiving;
             } else {
                 port_state->status = Status_Awaiting_Command_Ack;
@@ -252,7 +283,7 @@ static void process_send_complete(PortState * port_state) {
         case Status_Sending_Data:
             // Finished sending additional data, now see if we should expect
             // a response right now.
-            if (req->response_len > 0) {
+            if (request_expects_response(req)) {
                 port_state->status = Status_Receiving;
             } else {
                 port_state->status = Status_Awaiting_Data_Ack;
@@ -271,10 +302,7 @@ static void process_send_complete(PortState * port_state) {
 }
 
 static void process_receive_complete(PortState * port_state) {
-    RESET_RECEIVE_COMPLETE(port_state);
-
     Request * req = &port_state->current_request;
-    Response * resp = &port_state->current_response;
 
     switch (port_state->status) {
         case Status_Idle:
@@ -288,7 +316,7 @@ static void process_receive_complete(PortState * port_state) {
             break;
 
         case Status_Awaiting_Command_Ack:
-            if (!was_acknowledged(port_state)) {
+            if (!check_acknowledge(port_state)) {
                 Error_Handler(404);
                 // TODO: whatever should be done here?
                 // We got something that isn't an ACK message, unexpected.
@@ -298,7 +326,7 @@ static void process_receive_complete(PortState * port_state) {
             // No more data to send? Then we're done.
             // We wouldn't be in awaiting ack state if we expected
             // a data response back without sending data out first.
-            if (req->send_data_len == 0) {
+            if (!request_has_data(req)) {
                 port_state->status = Status_Done;
                 break;
             }
@@ -306,7 +334,7 @@ static void process_receive_complete(PortState * port_state) {
             port_state->status = Status_Sending_Data;
 
             // If we also expect a response, set that up first now
-            if (req->response_len > 0) {
+            if (request_expects_response(req)) {
                 uart_receive(
                     port_state->comport_id,
                     req->response_data,
@@ -334,7 +362,7 @@ static void process_receive_complete(PortState * port_state) {
         case Status_Awaiting_Data_Ack:
             // If we get in this state at all, we're not expecting a data
             // response, so we can mark it done
-            if (was_acknowledged(port_state)) {
+            if (check_acknowledge(port_state)) {
                 port_state->status = Status_Done;
                 break;
             } else {
@@ -346,12 +374,14 @@ static void process_receive_complete(PortState * port_state) {
             break;
 
         case Status_Receiving:
-            resp->comport_id = req->comport_id;
-            resp->data = req->response_data;
-            resp->data_length = req->response_len;
-            resp->request_command = req->request_command;
+            port_state->current_response = create_response(
+                req->comport_id,
+                req->request_command,
+                req->response_data,
+                req->response_len
+            );
 
-            queue_add(resp);
+            queue_add(&port_state->current_response);
             port_state->status = Status_Done;
             break;
 
@@ -359,13 +389,10 @@ static void process_receive_complete(PortState * port_state) {
             // Shouldn't be receiving anything when we're done.
             Error_Handler(253);
             break;
-
     }
 }
 
 static void check_timeout(PortState * port_state) {
-    uint32_t ticks = HAL_GetTick();
-
     switch (port_state->status) {
         case Status_Awaiting_Command_Ack:
         case Status_Awaiting_Data_Ack:
@@ -381,7 +408,6 @@ static void check_timeout(PortState * port_state) {
             break;
     }
 }
-
 
 // Switches between selected port pairs, and starts any queued requests
 // for the ports previously unselected
@@ -424,7 +450,7 @@ static void start_request(Request * request) {
 
     port_state->status = Status_Sending_Command;
 
-    if (request->send_data_len == 0 && request->response_len > 0) {
+    if (!request_has_data(request) && request_expects_response(request)) {
         uart_receive(
             request->comport_id,
             request->response_data,
@@ -439,19 +465,18 @@ static void start_request(Request * request) {
         expect_acknowledge(port_state);
     }
 
-    uart_send(
-        request->comport_id,
-        &request->request_command, // Address of command byte in memory
-        1 // number of bytes to send
-    );
+    uart_send(request->comport_id, &request->request_command, 1);
 }
 
 static PortState * get_port_state(ComportId comport_id) {
+    // TODO: Use an array instead but check bounds first
     switch (comport_id) {
         case Comport_Left: return &port_state_left;
         case Comport_Down: return &port_state_down;
         case Comport_Up: return &port_state_up;
         case Comport_Right: return &port_state_right;
+        // TODO: if not a valid port, hit Error_Handler; no use case where NULL
+        // response is useful.
         default: return NULL;
     }
 }
@@ -460,9 +485,7 @@ static void queue_add(Response * resp) {
     // Don't take more responses than max
     if (queue_count == RESPONSE_QUEUE_MAX) return;
 
-    if (queue_rear == RESPONSE_QUEUE_MAX - 1) {
-        queue_rear = -1;
-    }
+    if (queue_rear == RESPONSE_QUEUE_MAX - 1) queue_rear = -1;
 
     queue_rear++;
     queue_responses[queue_rear] = resp;
@@ -473,12 +496,10 @@ static Response * queue_take() {
     if (queue_count == 0) return NULL;
 
     Response * resp = queue_responses[queue_front];
+
     queue_front++;
-
-    if (queue_front == RESPONSE_QUEUE_MAX) {
-        queue_front = 0;
-    }
-
+    if (queue_front == RESPONSE_QUEUE_MAX) queue_front = 0;
     queue_count--;
+
     return resp;
 } 

@@ -76,7 +76,15 @@ typedef struct {
     // current_request.response_len > 0
     Response current_response;
 
+    // The tick were when we finished sending some data that warrants a
+    // response. If we get a certain number of ticks beyond this point without
+    // a response, we consider the request to have timed out.
     uint32_t waiting_since;
+
+    // Target of the "acknowledge" response byte, should be written to
+    // the value of MSG_ACKNOWLEDGE by the uart to indicate receipt of a command
+    // or additional data. Once read on this end, should be set back to 0x00.
+    uint8_t acknowledged;
 
     // Interrupt flags to be processed
     uint8_t interrupt_flags;

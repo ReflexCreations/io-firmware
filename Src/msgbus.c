@@ -18,7 +18,7 @@
     req_queue_init(&state.req_queue); \
 } while(0U);
 
-
+// TODO convert these to inline functions
 #define SWITCH_PORTS_IF_DONE() \
     if ((selected_ports.first->status == Status_Done \
             || selected_ports.first->status == Status_Idle) && \
@@ -75,17 +75,10 @@ static int8_t queue_front = 0;
 static int8_t queue_rear = -1;
 static uint8_t queue_count = 0;
 
-// TODO: make part of PortState struct
-uint8_t acknowledged[4] = {
-    0x00, // Comport_Left
-    0x00, // Comport_Down
-    0x00, // Comport_Up
-    0x00  // Comport_Right
-};
-
 // Non-0 if there's any interrupt flags
 static uint8_t any_interrupt_flags;
 
+// TODO: inline function in request.h
 // Init value for this struct
 Request Request_Default = {
     Comport_None, // comport_id
@@ -95,6 +88,7 @@ Request Request_Default = {
     0 // response_len
 };
 
+// TODO: inline function in response.h or wherever
 Response Response_Default = { 
     Comport_None, // comport_id
     0x00, // request_command;
@@ -106,7 +100,6 @@ static void switch_ports();
 static void start_request(Request *);
 static PortState * get_port_state(ComportId);
 
-static void expect_acknowledge(ComportId);
 static void check_timeout(PortState *);
 
 // Should be given to uart as function pointers
@@ -118,6 +111,16 @@ static void process_receive_complete(PortState *);
 
 static void queue_add(Response *);
 static Response * queue_take();
+
+static inline void expect_acknowledge(PortState * port_state) {
+    uart_receive(port_state->comport_id, &port_state->acknowledged, 1);
+}
+
+static inline uint8_t was_acknowledged(PortState * port_state) {
+    uint8_t ack = (port_state->acknowledged == MSG_ACKNOWLEGE);
+    port_state->acknowledged = 0x00;
+    return ack;
+}
 
 
 void msgbus_init() {
@@ -139,7 +142,6 @@ void msgbus_init() {
 
 void msgbus_process_flags() {
     if (!ANY_INTERRUPT_FLAGS) {
-        // TODO: check if waiting
         check_timeout(&port_state_left);
         check_timeout(&port_state_down);
         check_timeout(&port_state_up);
@@ -286,14 +288,12 @@ static void process_receive_complete(PortState * port_state) {
             break;
 
         case Status_Awaiting_Command_Ack:
-            if (acknowledged[port_state->comport_id] != MSG_ACKNOWLEGE) {
+            if (!was_acknowledged(port_state)) {
                 Error_Handler(404);
                 // TODO: whatever should be done here?
                 // We got something that isn't an ACK message, unexpected.
                 break;
             }
-
-            acknowledged[port_state->comport_id] = 0x00;
 
             // No more data to send? Then we're done.
             // We wouldn't be in awaiting ack state if we expected
@@ -313,7 +313,7 @@ static void process_receive_complete(PortState * port_state) {
                     req->response_len
                 );
             } else {
-                expect_acknowledge(port_state->comport_id);
+                expect_acknowledge(port_state);
             }
 
             // Send our data payload
@@ -334,8 +334,7 @@ static void process_receive_complete(PortState * port_state) {
         case Status_Awaiting_Data_Ack:
             // If we get in this state at all, we're not expecting a data
             // response, so we can mark it done
-            if (acknowledged[port_state->comport_id] == MSG_ACKNOWLEGE) {
-                acknowledged[port_state->comport_id] = 0x00;
+            if (was_acknowledged(port_state)) {
                 port_state->status = Status_Done;
                 break;
             } else {
@@ -434,7 +433,7 @@ static void start_request(Request * request) {
         //   also don't expect a data response
         // in essence, acknowledge is only redundant if we already expect the
         // panel to send something back right after getting the command.
-        expect_acknowledge(request->comport_id);
+        expect_acknowledge(port_state);
     }
 
     uart_send(
@@ -452,10 +451,6 @@ static PortState * get_port_state(ComportId comport_id) {
         case Comport_Right: return &port_state_right;
         default: return NULL;
     }
-}
-
-static void expect_acknowledge(ComportId comport_id) {
-    uart_receive(comport_id, acknowledged + comport_id, 1);
 }
 
 static void queue_add(Response * resp) {

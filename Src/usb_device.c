@@ -28,21 +28,28 @@
 USBD_HandleTypeDef hUsbDeviceFS;
 
 void MX_USB_DEVICE_Init(void) {
-  // Init Device Library, add supported class and start the library.
-  if (USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS) != USBD_OK) {
-    Error_Handler(1500);
-  }
+    // Init Device Library, add supported class and start the library.
 
-  if (USBD_RegisterClass(&hUsbDeviceFS, &USBD_CUSTOM_HID) != USBD_OK) {
-    Error_Handler(1500);
-  }
+    USBD_StatusTypeDef res = USBD_Init(&hUsbDeviceFS, &FS_Desc, DEVICE_FS);
+    if (res != USBD_OK) {
+        error_panic_data(Error_USB_USBD_Init, res);
+    }
 
-  if (USBD_CUSTOM_HID_RegisterInterface(
-        &hUsbDeviceFS, &USBD_CustomHID_fops_FS) != USBD_OK) {
-    Error_Handler(1500);
-  }
+    res = USBD_RegisterClass(&hUsbDeviceFS, &USBD_CUSTOM_HID);
+    if (res != USBD_OK) {
+        error_panic_data(Error_USB_USBD_RegisterClass, res);
+    }
 
-  if (USBD_Start(&hUsbDeviceFS) != USBD_OK) {
-    Error_Handler(1500);
-  }
+    res = USBD_CUSTOM_HID_RegisterInterface(
+        &hUsbDeviceFS,
+        &USBD_CustomHID_fops_FS
+    );
+    if (res != USBD_OK ) {
+        error_panic_data(Error_USB_USBD_RegisterInterface, res);
+    }
+
+    res = USBD_Start(&hUsbDeviceFS);
+    if (res != USBD_OK) {
+        error_panic_data(Error_USB_USBD_Start, res);
+    }
 }

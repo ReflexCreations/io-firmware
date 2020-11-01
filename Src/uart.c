@@ -3,17 +3,17 @@
 #include "error_handler.h"
 #include "config.h"
 
-#define RS485_CK_DR_PINS_B GPIO_PIN_2|GPIO_PIN_7|GPIO_PIN_9|GPIO_PIN_13
-#define RS485_TX_DR_PINS_B GPIO_PIN_0|GPIO_PIN_14|GPIO_PIN_6
-#define RS485_TX_DR_PINS_A GPIO_PIN_5
-#define RS485_RX_DR_PINS_B GPIO_PIN_1|GPIO_PIN_15|GPIO_PIN_4|GPIO_PIN_8
+#define RS485_CK_DR_PINS_B (GPIO_PIN_2 | GPIO_PIN_7 | GPIO_PIN_9 | GPIO_PIN_13)
+#define RS485_TX_DR_PINS_B (GPIO_PIN_0 | GPIO_PIN_14 | GPIO_PIN_6)
+#define RS485_TX_DR_PINS_A (GPIO_PIN_5)
+#define RS485_RX_DR_PINS_B (GPIO_PIN_1 | GPIO_PIN_15 | GPIO_PIN_4 | GPIO_PIN_8)
 
-#define RS485_CK_PINS_A GPIO_PIN_4|GPIO_PIN_8
-#define RS485_CK_PINS_B GPIO_PIN_5|GPIO_PIN_12
+#define RS485_CK_PINS_A (GPIO_PIN_4 | GPIO_PIN_8)
+#define RS485_CK_PINS_B (GPIO_PIN_5 | GPIO_PIN_12)
 
 // GPIO pins to configure for alternate function USART2 to
 // hooked the peripheral up to the "up" panel connector
-#define UART2_UP_PINS_A GPIO_PIN_2|GPIO_PIN_3
+#define UART2_UP_PINS_A (GPIO_PIN_2 | GPIO_PIN_3)
 #define UART2_UP_PINS_B (0)
 // And the same for the "right" panel connector
 #define UART2_RIGHT_PINS_A GPIO_PIN_15
@@ -44,6 +44,7 @@
 UART_HandleTypeDef huart1_l; // Left
 UART_HandleTypeDef huart2_u_r; // Up, Right
 UART_HandleTypeDef huart3_d; // Down
+
 DMA_HandleTypeDef hdma_usart1_l_rx; // Left
 DMA_HandleTypeDef hdma_usart1_l_tx;
 DMA_HandleTypeDef hdma_usart2_u_r_rx; // Up, right
@@ -52,7 +53,7 @@ DMA_HandleTypeDef hdma_usart3_d_rx; // Down
 DMA_HandleTypeDef hdma_usart3_d_tx;
 
 // up or right connector, this indicates which one is configured on USART2
-ComportId switched_uart = Comport_None;
+ComportId switched_comport = Comport_None;
 
 static SendCompleteHandler send_complete_handler = NULL;
 static ReceiveCompleteHandler receive_complete_handler = NULL;
@@ -63,6 +64,16 @@ static void init_periph(UART_HandleTypeDef *, USART_TypeDef *, IRQn_Type);
 static void init_dma_interrupts();
 
 static UART_HandleTypeDef * get_uart_handle(ComportId);
+
+static UART_HandleTypeDef * uart_handles[COMPORT_ID_MAX + 1];
+
+static inline UART_HandleTypeDef * get_uart_handle(ComportId comport_id) {
+    if (comport_id > COMPORT_ID_MAX) {
+        error_panic_data(Error_App_UART_InvalidComport, comport_id);
+    }
+
+    return uart_handles[comport_id];
+}
 
 void uart_init() {
     init_gpio();
@@ -76,37 +87,30 @@ void uart_init() {
     // Down
     init_periph(&huart3_d, USART3, USART3_IRQn);
 
+    uart_handles[Comport_Left] = &huart1_l;
+    uart_handles[Comport_Down] = &huart3_d;
+    uart_handles[Comport_Up] = &huart2_u_r;
+    uart_handles[Comport_Right] = &huart2_u_r;
+
     // Wait for all panel boards marked as connected to signal their readiness
     while (!ALL_INITIALIZED);
 }
 
-void uart_send(
-    ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
-
+void uart_send(ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
     UART_HandleTypeDef * huart = get_uart_handle(comport_id);
-
-    if (huart == NULL) {
-        Error_Handler(500);
-        return;
-    }
-
-    if(HAL_UART_Transmit_DMA(huart, data_ptr, data_len) != HAL_OK) {
-        Error_Handler(500);
+    HAL_StatusTypeDef result = HAL_UART_Transmit_DMA(huart, data_ptr, data_len);
+    
+    if (result != HAL_OK) {
+        error_panic_data(Error_HAL_UART_Transmit_DMA, (uint32_t)result);
     }
 }
 
-void uart_receive(
-    ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
-
+void uart_receive(ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
     UART_HandleTypeDef * huart = get_uart_handle(comport_id);
-
-    if (huart == NULL) {
-        Error_Handler(500);
-        return;
-    }
-
-    if (HAL_UART_Receive_DMA(huart, data_ptr, data_len) != HAL_OK) {
-        Error_Handler(500);
+    HAL_StatusTypeDef result = HAL_UART_Receive_DMA(huart, data_ptr, data_len);
+    
+    if (result != HAL_OK) {
+        error_panic_data(Error_HAL_UART_Receive_DMA, result);
     }
 }
 
@@ -127,12 +131,17 @@ void uart_connect_port(ComportId comport_id) {
     if (comport_id != Comport_Right && comport_id != Comport_Up) return;
 
     // Don't do anything if the switched uart already matches this one
-    if (switched_uart == comport_id) return;
+    if (switched_comport == comport_id) return;
 
     HAL_NVIC_DisableIRQ(USART2_IRQn);
 
     HAL_UART_MspDeInit(&huart2_u_r);
-    HAL_UART_DeInit(&huart2_u_r);
+    
+    HAL_StatusTypeDef de_init_result = HAL_UART_DeInit(&huart2_u_r);
+
+    if (de_init_result != HAL_OK) {
+        error_panic_data(Error_HAL_UART_DeInit, de_init_result);
+    }
     
     uint32_t af_pins_a, af_pins_b;
     uint32_t float_pins_a, float_pins_b;
@@ -178,7 +187,7 @@ void uart_connect_port(ComportId comport_id) {
     
     init_periph(&huart2_u_r, USART2, USART2_IRQn);
     HAL_UART_MspInit(&huart2_u_r);
-    switched_uart = comport_id;
+    switched_comport = comport_id;
 }
 
 // Initialization
@@ -276,11 +285,10 @@ static void init_periph(
     huart->AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
 
     HAL_NVIC_SetPriority(irqn, 0, 0);
-    
     HAL_NVIC_EnableIRQ(irqn);
 
     if (HAL_UART_Init(huart) != HAL_OK){
-        Error_Handler(500);
+        error_panic_data(Error_HAL_UART_Init, (uint32_t)usart);
     }
 }
 
@@ -312,19 +320,13 @@ static void init_dma_interrupts() {
     HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 }
 
-void USART1_IRQHandler() { HAL_UART_IRQHandler(&huart1_l); }
-
-void USART2_IRQHandler() { HAL_UART_IRQHandler(&huart2_u_r); }
-
-void USART3_IRQHandler() { HAL_UART_IRQHandler(&huart3_d); }
-
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (send_complete_handler == NULL) return;
 
     if (huart == &huart1_l) {
         send_complete_handler(Comport_Left);
     } else if (huart == &huart2_u_r) {
-        send_complete_handler(switched_uart);
+        send_complete_handler(switched_comport);
     } else {
         send_complete_handler(Comport_Down);
     }
@@ -336,18 +338,8 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart1_l) {
         receive_complete_handler(Comport_Left);
     } else if (huart == &huart2_u_r) {
-        receive_complete_handler(switched_uart);
+        receive_complete_handler(switched_comport);
     } else {
         receive_complete_handler(Comport_Down);
-    }
-}
-
-static UART_HandleTypeDef * get_uart_handle(ComportId comport_id) {
-    switch (comport_id) {
-        case Comport_Left: return &huart1_l;
-        case Comport_Down: return &huart3_d;
-        case Comport_Up: return &huart2_u_r;
-        case Comport_Right: return &huart2_u_r;
-        default: return NULL;
     }
 }

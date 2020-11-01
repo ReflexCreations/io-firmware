@@ -34,18 +34,14 @@ void req_queue_init(RequestQueue * queue) {
 
 void req_queue_add(RequestQueue * queue, Request request) {
     if (queue->count == MAX_REQ_QUEUE_LENGTH) {
-        Error_Handler(200);
+        error_panic(Error_App_ReqQueue_QueueFull);
         return;
     }
 
-    if (contains(queue, request)) {
-        //Error_Handler(400);
-        return;
-    }
+    // Don't add if the request is already in the queue
+    if (contains(queue, request)) return;
 
-    if (queue->rear == MAX_REQ_QUEUE_LENGTH - 1) {
-        queue->rear = -1;
-    }
+    if (queue->rear == MAX_REQ_QUEUE_LENGTH - 1) queue->rear = -1;
 
     queue->rear++;
     queue->items[queue->rear] = request;
@@ -59,10 +55,8 @@ Request req_queue_take(RequestQueue * queue) {
     queue->items[queue->front] = BlankRequest;
     queue->front++;
 
-    if (queue->front == MAX_REQ_QUEUE_LENGTH) {
-        queue->front = 0;
-    }
-
+    if (queue->front == MAX_REQ_QUEUE_LENGTH) queue->front = 0;
+    
     queue->count--;
     return req;
 }

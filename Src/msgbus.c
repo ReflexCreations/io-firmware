@@ -17,6 +17,8 @@ PortState port_state_down;
 PortState port_state_up;
 PortState port_state_right;
 
+static PortState * port_states[COMPORT_ID_MAX + 1];
+
 static PortPair selected_ports;
 static PortPair unselected_ports;
 
@@ -74,6 +76,14 @@ static inline void init_port_state(
     state->current_response = create_blank_response(port);
     state->interrupt_flags = 0x00;
     req_queue_init(&state->req_queue);
+}
+
+static inline PortState * get_port_state(ComportId comport_id) {
+    if (comport_id > COMPORT_ID_MAX) {
+        error_panic_data(Error_App_MsgBus_InvalidComport, comport_id);
+    }
+
+    return port_states[comport_id];
 }
 
 static inline void switch_ports_if_done() {
@@ -154,6 +164,11 @@ void msgbus_init() {
     init_port_state(&port_state_right, Comport_Right, false);
     init_port_state(&port_state_down, Comport_Down, false);
 
+    port_states[Comport_Left] = &port_state_left;
+    port_states[Comport_Down] = &port_state_down;
+    port_states[Comport_Up] = &port_state_up;
+    port_states[Comport_Right] = &port_state_right;
+
     selected_ports.first = &port_state_left;
     selected_ports.second = &port_state_up;
     unselected_ports.first = &port_state_right;
@@ -189,12 +204,6 @@ void msgbus_send_request(Request request) {
 
     PortState * portState = get_port_state(request.comport_id);
 
-    // If no valid port was specified, there's nothing we can do.
-    // This is a programming error, so should just brick the program.
-    if (portState == NULL) {
-        Error_Handler(250);
-    }
-
     // Not Idle? Stick it on the queue
     // Also if port is not selected we'll queue it for later
     if (portState->status != Status_Idle || !portState->selected) {
@@ -226,21 +235,11 @@ void msgbus_switch_ports_if_done() {
 }
 
 PortStatus msgbus_port_status(ComportId comport_id) {
-    PortState * port_state = get_port_state(comport_id);
-
-    if (port_state == NULL) {
-        Error_Handler(255);
-    }
-
-    return port_state->status;
+    return get_port_state(comport_id)->status;
 }
 
 void msgbus_wait_for_idle(ComportId comport_id) {
     PortState * port_state = get_port_state(comport_id);
-
-    if (port_state == NULL) {
-        Error_Handler(256);
-    }
 
     while (port_state->status != Status_Idle
             || port_state->req_queue.count > 0) {
@@ -252,13 +251,11 @@ void msgbus_wait_for_idle(ComportId comport_id) {
 
 // Callbacks for uart interrupts
 static void uart_on_send_complete(ComportId comport_id) {
-    PortState * port_state = get_port_state(comport_id);
-    set_send_complete(port_state);
+    set_send_complete(get_port_state(comport_id));
 }
 
 static void uart_on_receive_complete(ComportId comport_id) {
-    PortState * port_state = get_port_state(comport_id);
-    set_receive_complete(port_state);
+    set_receive_complete(get_port_state(comport_id));
 }
 
 // Process interrupt flags on main thread
@@ -296,7 +293,11 @@ static void process_send_complete(PortState * port_state) {
         default:
             // If we're getting this callback when not in either of the
             // sending statuses, something is wrong. Panic.
-            Error_Handler(251);
+            error_panic_data(
+                Error_App_MsgBus_SendCpltInvalidStatus,
+                port_state->status
+            );
+
             break;
     }
 }
@@ -305,21 +306,13 @@ static void process_receive_complete(PortState * port_state) {
     Request * req = &port_state->current_request;
 
     switch (port_state->status) {
-        case Status_Idle:
-            // Should not finish receiving when in idle mode.
-            Error_Handler(255);
-            break;
-
-        case Status_Sending_Command:
-            // Should be impossible.
-            Error_Handler(254);
-            break;
-
         case Status_Awaiting_Command_Ack:
             if (!check_acknowledge(port_state)) {
-                Error_Handler(404);
-                // TODO: whatever should be done here?
-                // We got something that isn't an ACK message, unexpected.
+                error_panic_data(
+                    Error_App_MsgBus_RecvCpltNoAck,
+                    Status_Awaiting_Command_Ack
+                );
+
                 break;
             }
 
@@ -353,24 +346,19 @@ static void process_receive_complete(PortState * port_state) {
             
             break;
 
-        case Status_Sending_Data:
-            // Should be impossible.
-            Error_Handler(252);
-            break;
-
-
         case Status_Awaiting_Data_Ack:
             // If we get in this state at all, we're not expecting a data
             // response, so we can mark it done
-            if (check_acknowledge(port_state)) {
-                port_state->status = Status_Done;
+            if (!check_acknowledge(port_state)) {
+                error_panic_data(
+                    Error_App_MsgBus_RecvCpltNoAck,
+                    Status_Awaiting_Data_Ack
+                );
+
                 break;
-            } else {
-                Error_Handler(403);
-                // Uh, not too sure? Maybe wait for another byte?
-                // Mark it done anyway?
             }
 
+            port_state->status = Status_Done;
             break;
 
         case Status_Receiving:
@@ -385,9 +373,13 @@ static void process_receive_complete(PortState * port_state) {
             port_state->status = Status_Done;
             break;
 
-        case Status_Done:
-            // Shouldn't be receiving anything when we're done.
-            Error_Handler(253);
+        default:
+            // Not in one of the valid states, panic
+            error_panic_data(
+                Error_App_MsgBus_RecvCpltInvalidStatus,
+                port_state->status
+            );
+
             break;
     }
 }
@@ -466,19 +458,6 @@ static void start_request(Request * request) {
     }
 
     uart_send(request->comport_id, &request->request_command, 1);
-}
-
-static PortState * get_port_state(ComportId comport_id) {
-    // TODO: Use an array instead but check bounds first
-    switch (comport_id) {
-        case Comport_Left: return &port_state_left;
-        case Comport_Down: return &port_state_down;
-        case Comport_Up: return &port_state_up;
-        case Comport_Right: return &port_state_right;
-        // TODO: if not a valid port, hit Error_Handler; no use case where NULL
-        // response is useful.
-        default: return NULL;
-    }
 }
 
 static void queue_add(Response * resp) {

@@ -255,8 +255,8 @@ static void init_system_clock() {
     RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
     RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
 
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK){
-        Error_Handler(1000);
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
+        error_panic(Error_HAL_RCC_OscConfig);
     }
 
     RCC_ClkInitStruct.ClockType = \
@@ -270,7 +270,7 @@ static void init_system_clock() {
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
 
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) {
-        Error_Handler(1000);
+        error_panic(Error_HAL_RCC_ClockConfig);
     }
 
     PeriphClkInit.PeriphClockSelection = \
@@ -283,8 +283,8 @@ static void init_system_clock() {
     PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
     PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
 
-    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK){
-        Error_Handler(1000);
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
+        error_panic(Error_HAL_RCC_PeriphClockConfig);
     }
 }
 

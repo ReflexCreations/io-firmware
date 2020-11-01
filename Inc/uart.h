@@ -15,6 +15,8 @@ typedef enum {
     Comport_Right = 0x03
 } ComportId;
 
+#define COMPORT_ID_MAX (Comport_Right)
+
 typedef void (* SendCompleteHandler)(ComportId);
 typedef void (* ReceiveCompleteHandler)(ComportId);
 

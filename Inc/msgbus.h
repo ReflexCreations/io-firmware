@@ -25,7 +25,7 @@ typedef struct {
 
     // Number of bytes contained in the response; should be at least 1.
     // This number is copied from the Request struct that caused this response
-    uint8_t data_length;
+    uint16_t data_length;
 } Response;
 
 typedef enum {

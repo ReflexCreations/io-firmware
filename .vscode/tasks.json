@@ -19,7 +19,20 @@
       {
           "label": "Load Firmware",
           "type": "shell",
-          "command": "st-flash write ./build/vsarm_firmware.bin 0x08000000 && st-flash reset || sleep 0.2 && st-flash write ./build/vsarm_firmare.bin 0x08000000 && st-flash reset",
+          "command": "st-flash write ./build/vsarm_firmware.bin 0x08000000 && st-flash reset",
+          "options": {
+              "cwd": "${workspaceRoot}"
+          },
+          "group": {
+              "kind": "build",
+              "isDefault": true
+          },
+          "problemMatcher": []
+      },
+      {
+          "label": "Clean build files",
+          "type": "shell",
+          "command": "echo 'Cleaning build outputs.' ; rm ./build/*; echo 'Done.'",
           "options": {
               "cwd": "${workspaceRoot}"
           },

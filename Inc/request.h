@@ -4,7 +4,7 @@
 #include "stm32f3xx.h"
 #include "uart.h"
 #include "commands.h"
-#include "bool.h"
+#include "stdbool.h"
 
 typedef struct {
     // Which port this request is being made over

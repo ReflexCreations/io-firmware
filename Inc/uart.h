@@ -2,7 +2,7 @@
 #define __UART__H
 
 #include "stm32f3xx.h"
-#include "bool.h"
+#include "stdbool.h"
 
 // The numeric value assigned are important to
 // msgbus; don't change them.

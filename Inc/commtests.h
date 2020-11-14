@@ -4,7 +4,7 @@
 #include "stm32f3xx.h"
 #include "msgbus.h"
 #include "request.h"
-#include "bool.h"
+#include "stdbool.h"
 
 uint8_t commtest_receive_2bytes(ComportId);
 uint8_t commtest_receive_64bytes(ComportId);

@@ -1,5 +1,5 @@
 #include "uart.h"
-#include "bool.h"
+#include "stdbool.h"
 #include "req_queue.h"
 #include "error_handler.h"
 

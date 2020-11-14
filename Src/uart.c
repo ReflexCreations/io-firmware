@@ -1,5 +1,5 @@
 #include "uart.h"
-#include "bool.h"
+#include "stdbool.h"
 #include "error_handler.h"
 #include "config.h"
 

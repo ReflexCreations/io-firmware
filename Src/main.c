@@ -2,7 +2,7 @@
 #include "usb_device.h"
 #include "usbd_customhid.h"
 #include "usbd_custom_hid_if.h"
-#include "bool.h"
+#include "stdbool.h"
 #include "uart.h"
 #include "commands.h"
 #include "msgbus.h"

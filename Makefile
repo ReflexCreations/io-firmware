@@ -47,10 +47,8 @@ Src/stm32f3xx_hal_msp.c \
 Src/stm32f3xx_it.c \
 Src/system_stm32f3xx.c \
 Src/uart.c \
-Src/usb_device.c \
-Src/usbd_conf.c \
-Src/usbd_custom_hid_if.c \
-Src/usbd_desc.c \
+Src/tusb_descriptors.c \
+Src/tusb_hid_impl.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_pcd_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_tim.c \
@@ -69,10 +67,12 @@ Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c_ex.c \
-Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c \
-Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c \
-Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c \
-Middlewares/ST/STM32_USB_Device_Library/Class/CustomHID/Src/usbd_customhid.c  
+Middlewares/tinyusb/src/tusb.c \
+Middlewares/tinyusb/src/class/hid/hid_device.c \
+Middlewares/tinyusb/src/device/usbd_control.c \
+Middlewares/tinyusb/src/device/usbd.c \
+Middlewares/tinyusb/src/common/tusb_fifo.c \
+Middlewares/tinyusb/src/portable/st/stm32_fsdev/dcd_stm32_fsdev.c 
 
 # ASM sources
 ASM_SOURCES =  \
@@ -122,7 +122,8 @@ C_DEFS =  \
 -DUSE_HAL_DRIVER \
 -DSTM32F303xC \
 -DUSE_HAL_DRIVER \
--DSTM32F303xC
+-DSTM32F303xC \
+-DCFG_TUSB_MCU=303 \
 
 
 # AS includes
@@ -133,10 +134,11 @@ C_INCLUDES =  \
 -IInc \
 -IDrivers/STM32F3xx_HAL_Driver/Inc \
 -IDrivers/STM32F3xx_HAL_Driver/Inc/Legacy \
--IMiddlewares/ST/STM32_USB_Device_Library/Core/Inc \
--IMiddlewares/ST/STM32_USB_Device_Library/Class/CustomHID/Inc \
+-IMiddlewares/tinyusb/src \
+-IMiddlewares/tinyusb/src/class/hid \
+-IMiddlewares/tinyusb/src/common \
+-IMiddlewares/tinyusb/src/device \
 -IDrivers/CMSIS/Device/ST/STM32F3xx/Include \
--IDrivers/CMSIS/Include \
 -IDrivers/CMSIS/Include
 
 

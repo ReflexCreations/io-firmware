@@ -1,7 +1,4 @@
 #include "main.h"
-#include "usb_device.h"
-#include "usbd_customhid.h"
-#include "usbd_custom_hid_if.h"
 #include "stdbool.h"
 #include "uart.h"
 #include "commands.h"
@@ -11,6 +8,9 @@
 #include "commtests.h"
 #include "ledtests.h"
 #include "color.h"
+#include "tusb_config.h"
+#include "tusb.h"
+#include "tusb_hid.h"
 
 #define USB_HID_PACKET_SIZE_BYTES (64U)
 #define BYTES_PER_SEGMENT (64U)
@@ -22,8 +22,6 @@
 #define SENSOR_RESPONSE_LEN (8U)
 
 #define COMPLETE_FRAME (0xFFFF)
-
-extern USBD_HandleTypeDef hUsbDeviceFS;
 
 uint8_t sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
 uint8_t usb_sensor_buffer[USB_HID_PACKET_SIZE_BYTES];
@@ -64,8 +62,8 @@ static inline void send_request_sensors() {
 }
 
 static inline void send_sensor_update_usb() {
-    USBD_CUSTOM_HID_SendReport(
-        &hUsbDeviceFS,
+    tud_hid_report(
+        USB_SEND_REPORT_ID,
         usb_sensor_buffer,
         USB_HID_PACKET_SIZE_BYTES
     );
@@ -153,8 +151,8 @@ static void init() {
     init_system_clock();
     uart_init();
     msgbus_init();
+    tusb_init();
     
-    MX_USB_DEVICE_Init();
     DBG_LED1_ON();
 }
 
@@ -162,27 +160,42 @@ static void run() {
     send_request_sensors();
 
     while (1) {
+        // Process any interrupt flags set since last loop
         msgbus_process_flags();
       
+        // If there's a new command response to process, do that
         if (msgbus_have_pending_response()) {
             Response * resp = msgbus_get_pending_response();
           
             switch (resp->request_command) {
                 case Command_Request_Sensors:
+                    // Currently Request_Sensors is the only command that
+                    // responds with data from the panel board
                     process_sensor_data(resp);
                     break;
             }
         }
 
+        // Send an update of the latest sensor readings over USB
         send_sensor_update_usb();
+
+        // If we've received LED data over USB since last loop, process that,
+        // and send it where it's got to go
         process_led_data();
+
+        // Request more sensor updates, always
         send_request_sensors();
+        
+        // Let TinyUSB process its interrupt flags
+        tud_task();
     }
 }
 
 static void test() {
     // usb comms test
     while (1) {
+        tud_task();
+
         send_sensor_update_usb();
         for (uint8_t i = 0; i < 32; i++) {
             usb_sensor_buffer[i] = i;
@@ -324,6 +337,18 @@ static void init_gpio() {
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    
+    // USB GPIO Configuration    
+    // PA11 -> USB_DM
+    // PA12 -> USB_DP 
+    GPIO_InitStruct.Pin = GPIO_PIN_11 | GPIO_PIN_12;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF14_USB;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    __HAL_RCC_USB_CLK_ENABLE();
 }
 
 #ifdef  USE_FULL_ASSERT

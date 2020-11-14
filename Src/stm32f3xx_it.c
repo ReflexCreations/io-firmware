@@ -32,9 +32,6 @@ extern UART_HandleTypeDef huart1_l;
 extern UART_HandleTypeDef huart2_u_r;
 extern UART_HandleTypeDef huart3_d;
 
-// usbd_conf.c
-extern PCD_HandleTypeDef hpcd_USB_FS;
-
 // All names of interrupts are defined in the startup file.
 
 // Cortex-M4 Core interrupt / exception handlers -------------------------------
@@ -117,9 +114,4 @@ void USART2_IRQHandler() {
 // Down
 void USART3_IRQHandler() {
     HAL_UART_IRQHandler(&huart3_d);
-}
-
-// USB low priority, CNA_RX0 interrupts handler
-void USB_LP_CAN_RX0_IRQHandler(void) {
-    HAL_PCD_IRQHandler(&hpcd_USB_FS);
 }

@@ -89,7 +89,7 @@ typedef struct {
     // Target of the "acknowledge" response byte, should be written to
     // the value of MSG_ACKNOWLEDGE by the uart to indicate receipt of a command
     // or additional data. Once read on this end, should be set back to 0x00.
-    uint8_t acknowledged;
+    uint8_t acknowledged[2];
 
     // Interrupt flags to be processed
     uint8_t interrupt_flags;

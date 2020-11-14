@@ -98,13 +98,23 @@ static inline void switch_ports_if_done() {
 }
 
 static inline void expect_acknowledge(PortState * port_state) {
-    uart_receive(port_state->comport_id, &port_state->acknowledged, 1);
+    uart_receive(port_state->comport_id, port_state->acknowledged, 1);
+}
+
+static inline void expect_acknowledge_command(PortState * port_state) {
+    uart_receive(port_state->comport_id, port_state->acknowledged, 2);
 }
 
 static inline uint8_t check_acknowledge(PortState * port_state) {
-    uint8_t ack_was = port_state->acknowledged;
-    port_state->acknowledged = 0x00;
-    return ack_was == MSG_ACKNOWLEGE;
+    uint8_t ack_was = port_state->acknowledged[0];
+    Commands ack_cmd_was = port_state->acknowledged[1];
+    port_state->acknowledged[0] = 0x00;
+    return ack_was == MSG_ACKNOWLEGE 
+            && ack_cmd_was == port_state->current_request.request_command;
+}
+
+static inline void clear_acknowledge_command(PortState * port_state) {
+    port_state->acknowledged[1] = Command_None;
 }
 
 // Helpers for dealing with flags set by interrupts
@@ -439,6 +449,7 @@ static void start_request(Request * request) {
     // Assumption at this stage: request has valid comport_id
 
     PortState * port_state = get_port_state(request->comport_id);
+    clear_acknowledge_command(port_state);
 
     port_state->status = Status_Sending_Command;
 
@@ -454,7 +465,7 @@ static void start_request(Request * request) {
         //   also don't expect a data response
         // in essence, acknowledge is only redundant if we already expect the
         // panel to send something back right after getting the command.
-        expect_acknowledge(port_state);
+        expect_acknowledge_command(port_state);
     }
 
     uart_send(request->comport_id, &request->request_command, 1);

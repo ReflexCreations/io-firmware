@@ -75,6 +75,34 @@ static inline UART_HandleTypeDef * get_uart_handle(ComportId comport_id) {
     return uart_handles[comport_id];
 }
 
+static inline HAL_StatusTypeDef receive_dma(
+    UART_HandleTypeDef * huart,
+    uint8_t * dest_ptr,
+    uint16_t len
+) {
+    // If for whatever reason HAL thinks we're not ready, abort ongoing receive.
+    // I'm pretty confident in our own state machine.
+    if (huart->RxState != HAL_UART_STATE_READY) {
+        HAL_UART_AbortReceive(huart);
+    }
+
+    return HAL_UART_Receive_DMA(huart, dest_ptr, len);
+}
+
+static inline HAL_StatusTypeDef transmit_dma(
+    UART_HandleTypeDef * huart,
+    uint8_t * source_ptr,
+    uint16_t len
+) {
+    // If for whatever reason HAL thinks we're not ready, aborting ongoing
+    // transmit. I'm pretty confident in our own state machine.
+    if (huart->gState != HAL_UART_STATE_READY) {
+        HAL_UART_AbortTransmit(huart);
+    }
+    
+    return HAL_UART_Transmit_DMA(huart, source_ptr, len);
+}
+
 void uart_init() {
     init_gpio();
     init_rs485();
@@ -98,7 +126,7 @@ void uart_init() {
 
 void uart_send(ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
     UART_HandleTypeDef * huart = get_uart_handle(comport_id);
-    HAL_StatusTypeDef result = HAL_UART_Transmit_DMA(huart, data_ptr, data_len);
+    HAL_StatusTypeDef result = transmit_dma(huart, data_ptr, data_len);
     
     if (result != HAL_OK) {
         error_panic_data(Error_HAL_UART_Transmit_DMA, (uint32_t)result);
@@ -107,7 +135,7 @@ void uart_send(ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
 
 void uart_receive(ComportId comport_id, uint8_t * data_ptr, uint16_t data_len) {
     UART_HandleTypeDef * huart = get_uart_handle(comport_id);
-    HAL_StatusTypeDef result = HAL_UART_Receive_DMA(huart, data_ptr, data_len);
+    HAL_StatusTypeDef result = receive_dma(huart, data_ptr, data_len);
     
     if (result != HAL_OK) {
         error_panic_data(Error_HAL_UART_Receive_DMA, result);
@@ -322,6 +350,7 @@ static void init_dma_interrupts() {
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (send_complete_handler == NULL) return;
+    HAL_UART_AbortTransmit(huart);
 
     if (huart == &huart1_l) {
         send_complete_handler(Comport_Left);
@@ -334,6 +363,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (receive_complete_handler == NULL) return;
+    HAL_UART_AbortReceive(huart);
 
     if (huart == &huart1_l) {
         receive_complete_handler(Comport_Left);

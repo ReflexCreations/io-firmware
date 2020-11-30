@@ -3,7 +3,7 @@
     {
       "showDevDebugOutput": true,
       "cwd": "${workspaceRoot}",
-      "executable": "./build/vsarm_firmware.elf",
+      "executable": "./build/io_firmware.elf",
       "name": "Debug STM32",
       "request": "launch",
       "type": "cortex-debug",

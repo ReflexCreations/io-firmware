@@ -13,7 +13,7 @@
 ######################################
 # target
 ######################################
-TARGET = final-firm
+TARGET = io-firmware
 
 
 ######################################
@@ -67,12 +67,12 @@ Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_flash_ex.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c.c \
 Drivers/STM32F3xx_HAL_Driver/Src/stm32f3xx_hal_i2c_ex.c \
-Middlewares/tinyusb/src/tusb.c \
-Middlewares/tinyusb/src/class/hid/hid_device.c \
-Middlewares/tinyusb/src/device/usbd_control.c \
-Middlewares/tinyusb/src/device/usbd.c \
-Middlewares/tinyusb/src/common/tusb_fifo.c \
-Middlewares/tinyusb/src/portable/st/stm32_fsdev/dcd_stm32_fsdev.c 
+Src/tinyusb/tusb.c \
+Src/tinyusb/class/hid/hid_device.c \
+Src/tinyusb/device/usbd_control.c \
+Src/tinyusb/device/usbd.c \
+Src/tinyusb/common/tusb_fifo.c \
+Src/tinyusb/portable/st/stm32_fsdev/dcd_stm32_fsdev.c 
 
 # ASM sources
 ASM_SOURCES =  \
@@ -121,8 +121,6 @@ AS_DEFS =
 C_DEFS =  \
 -DUSE_HAL_DRIVER \
 -DSTM32F303xC \
--DUSE_HAL_DRIVER \
--DSTM32F303xC \
 -DCFG_TUSB_MCU=303 \
 
 
@@ -134,12 +132,12 @@ C_INCLUDES =  \
 -IInc \
 -IDrivers/STM32F3xx_HAL_Driver/Inc \
 -IDrivers/STM32F3xx_HAL_Driver/Inc/Legacy \
--IMiddlewares/tinyusb/src \
--IMiddlewares/tinyusb/src/class/hid \
--IMiddlewares/tinyusb/src/common \
--IMiddlewares/tinyusb/src/device \
+-Isrc/tinyusb/ \
+-Isrc/tinyusb/class/hid \
+-Isrc/tinyusb/common \
+-Isrc/tinyusb/device \
 -IDrivers/CMSIS/Device/ST/STM32F3xx/Include \
--IDrivers/CMSIS/Include
+-IDrivers/CMSIS/Include 
 
 
 # compile gcc flags
